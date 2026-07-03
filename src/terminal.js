@@ -77,12 +77,18 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", handleViewportResize);
 }
 
-// Just the LED for now - toggling the actual screen on/off is future work.
+// Just the LED + latch look for now - toggling the actual screen on/off
+// is future work.
 var powerOn = true;
 var powerLed = document.getElementById("powerLed");
-document.getElementById("powerBtn").addEventListener("click", function () {
+var powerBtnEl = document.getElementById("powerBtn");
+powerBtnEl.classList.add("pressed"); // starts on, so starts latched in
+powerBtnEl.addEventListener("click", function () {
   powerOn = !powerOn;
   powerLed.classList.toggle("off", !powerOn);
+  // Old push-push CRT buttons latch in when on, click back out when off -
+  // not a spring-back momentary press.
+  powerBtnEl.classList.toggle("pressed", powerOn);
 });
 
 function randomFakeIp() {
@@ -493,7 +499,57 @@ function bootSequence(done) {
   }, 2600, 3600);
 }
 
+// Tab completion for `cd <partial>`, matched against the current
+// directory's entries in FS. Only completes at the end of the line -
+// mid-line tab completion is a much fussier problem and isn't the case
+// being asked for here.
+function handleTab() {
+  if (cursorPos !== inputBuffer.length) return;
+
+  var parts = inputBuffer.split(/\s+/);
+  if (parts[0] !== "cd" || parts.length < 2) return;
+
+  var partial = parts[parts.length - 1];
+  var entries = FS[cwd] || [];
+  var matches = entries.filter(function (name) {
+    return name.indexOf(partial) === 0;
+  });
+  if (matches.length === 0) return;
+
+  var completion =
+    matches.length === 1
+      ? matches[0]
+      : matches.reduce(function (a, b) {
+          var i = 0;
+          while (i < a.length && i < b.length && a[i] === b[i]) i++;
+          return a.slice(0, i);
+        });
+
+  if (completion.length <= partial.length) {
+    // Ambiguous and no further common prefix to fill in - list the
+    // options (real bash behavior) instead of silently doing nothing,
+    // then reprint the prompt with what was typed so far so the visitor
+    // can keep disambiguating.
+    if (matches.length > 1) {
+      term.write("\r\n" + matches.join("  "));
+      writePrompt();
+      term.write(inputBuffer);
+    }
+    return;
+  }
+
+  var toAppend = completion.slice(partial.length);
+  inputBuffer += toAppend;
+  cursorPos += toAppend.length;
+  term.write(toAppend);
+}
+
 term.onData(function (data) {
+  if (data === "\t") {
+    handleTab();
+    return;
+  }
+
   if (data === "\x1b[A") {
     // Up: step back through history, stopping at the oldest entry.
     if (historyIndex > 0) {
