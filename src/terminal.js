@@ -38,6 +38,108 @@ function writePrompt() {
   term.write("\r\n" + promptString());
 }
 
+// Clickable directory names in `ls` output. Each entry pins an exact
+// (line, column) range in the buffer to the directory name that was
+// printed there, so the link provider below can look up "what did the
+// visitor click" without re-parsing rendered text.
+var dirLinks = [];
+
+term.registerLinkProvider({
+  provideLinks: function (bufferLineNumber, callback) {
+    var matches = dirLinks.filter(function (l) {
+      return l.line === bufferLineNumber;
+    });
+    if (!matches.length) {
+      callback(undefined);
+      return;
+    }
+    callback(
+      matches.map(function (l) {
+        return {
+          text: l.name,
+          range: {
+            start: { x: l.startCol, y: bufferLineNumber },
+            end: { x: l.endCol, y: bufferLineNumber },
+          },
+          activate: function () {
+            navigateTo(l.name);
+          },
+        };
+      })
+    );
+  },
+});
+
+function clearInputLine() {
+  for (var i = 0; i < inputBuffer.length; i++) {
+    term.write("\b \b");
+  }
+  inputBuffer = "";
+}
+
+// Same "type it, then run it" flow as the scripted intro, but triggered
+// by clicking a directory link instead of playing on a timer. Clears out
+// any partially-typed input first so a stray in-progress command can't
+// get mixed in with the click. If the destination isn't empty, this also
+// follows up with an auto-typed `ls -a` - same reasoning as the intro:
+// a visitor who clicked instead of typing still needs to see what's
+// there without guessing the next command. Works for any folder added
+// to FS later, not just projects.
+function navigateTo(name) {
+  term.options.disableStdin = true;
+  clearInputLine();
+  typeLine(
+    "cd " + name,
+    function () {
+      wait(randBetween(150, 350), function () {
+        runCommand("cd " + name);
+        writePrompt();
+        if ((FS[cwd] || []).length === 0) {
+          term.options.disableStdin = false;
+          term.focus();
+          return;
+        }
+        typeLine(
+          "ls -a",
+          function () {
+            wait(randBetween(150, 350), function () {
+              runCommand("ls -a");
+              writePrompt();
+              term.options.disableStdin = false;
+              term.focus();
+            });
+          },
+          700,
+          1300
+        );
+      });
+    },
+    150,
+    400
+  );
+}
+
+// Records where each directory name landed on screen after an `ls` write
+// completes, so the link provider can find it later. list/entries mirror
+// what was just printed: list is the full displayed row (may include "."
+// and ".."), entries is the subset that are real, cd-able directories.
+function registerDirLinks(list, entries) {
+  var line = term.buffer.active.baseY + term.buffer.active.cursorY + 1;
+  var col = 1;
+  for (var i = 0; i < list.length; i++) {
+    var name = list[i];
+    if (entries.indexOf(name) !== -1) {
+      dirLinks.push({
+        line: line,
+        startCol: col,
+        endCol: col + name.length - 1,
+        name: name,
+      });
+    }
+    col += name.length + 2;
+  }
+}
+
 // Resolves a cd target against the current working directory.
 function resolveCd(target) {
   if (!target || target === "~") return "~";
@@ -52,7 +154,16 @@ function resolveCd(target) {
   return base + "/" + target;
 }
 
-var KNOWN_DIRS = ["/var", "/var/www", "/var/www/dubsector.dev"];
+// Minimal virtual filesystem: path -> list of entries in that directory.
+// "~" is root's empty home dir. cd/ls both read from this single source
+// of truth so a directory only needs to be added here to become real.
+var FS = {
+  "~": [],
+  "/var": ["www"],
+  "/var/www": ["dubsector.dev"],
+  "/var/www/dubsector.dev": ["projects"],
+  "/var/www/dubsector.dev/projects": [],
+};
 
 function runCommand(line) {
   var trimmed = line.trim();
@@ -60,7 +171,8 @@ function runCommand(line) {
 
   var parts = trimmed.split(/\s+/);
   var cmd = parts[0];
-  var arg = parts.slice(1).join(" ");
+  var args = parts.slice(1);
+  var arg = args.join(" ");
 
   if (cmd === "clear") {
     term.clear();
@@ -69,12 +181,37 @@ function runCommand(line) {
 
   if (cmd === "cd") {
     var target = resolveCd(arg);
-    if (target === "~" || KNOWN_DIRS.indexOf(target) !== -1) {
+    if (target === "~" || FS.hasOwnProperty(target)) {
       cwd = target;
     } else {
       term.write(
         "\r\nbash: cd: " + (arg || "~") + ": No such file or directory"
       );
+    }
+    return;
+  }
+
+  if (cmd === "ls") {
+    var flags = args
+      .filter(function (a) {
+        return a.charAt(0) === "-";
+      })
+      .join("");
+    var showAll = flags.indexOf("a") !== -1;
+    var entries = (FS[cwd] || []).slice();
+    var list = showAll ? [".", ".."].concat(entries) : entries;
+    if (list.length) {
+      // Underline every real directory name so it reads as clickable even
+      // before a visitor hovers it (hover-only affordance doesn't exist on
+      // touchscreens). "." and ".." stay plain - not worth linking.
+      var display = list
+        .map(function (name) {
+          return entries.indexOf(name) !== -1 ? "\x1b[4m" + name + "\x1b[24m" : name;
+        })
+        .join("  ");
+      term.write("\r\n" + display, function () {
+        registerDirLinks(list, entries);
+      });
     }
     return;
   }
@@ -255,10 +392,42 @@ term.onData(function (data) {
   term.write(data);
 });
 
-bootSequence(function () {
+// A first-time visitor has no way to know `cd`/`ls` do anything here, so
+// the terminal demonstrates itself: type the same two commands the old
+// static version already showed as "done", then reveal the projects
+// folder, then hand control back. Stdin is disabled while this plays so
+// a visitor mashing keys early can't get interleaved with the scripted
+// input and desync the prompt.
+function runIntro() {
+  term.options.disableStdin = true;
   writePrompt();
-  term.focus();
-});
+  typeLine(
+    "cd var/www/dubsector.dev",
+    function () {
+      wait(randBetween(150, 350), function () {
+        runCommand("cd var/www/dubsector.dev");
+        writePrompt();
+        typeLine(
+          "ls -a",
+          function () {
+            wait(randBetween(150, 350), function () {
+              runCommand("ls -a");
+              writePrompt();
+              term.options.disableStdin = false;
+              term.focus();
+            });
+          },
+          900,
+          1800
+        );
+      });
+    },
+    1000,
+    2000
+  );
+}
+
+bootSequence(runIntro);
 
 // Test hook: lets automated checks feed synthetic keystrokes without
 // needing real DOM key events.
