@@ -1,5 +1,7 @@
 name = "terminal"
 compatibility_date = "2026-07-01"
+main = "src/worker.js"
 
 [assets]
 directory = "./dist"
+binding = "ASSETS"
