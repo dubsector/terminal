@@ -55,6 +55,12 @@ if (window.visualViewport) {
     var vh = window.visualViewport.height;
     var keyboardOpen = layoutHeight - vh > 120;
     document.body.classList.toggle("keyboard-open", keyboardOpen);
+    // Ties the page's actual box to the exact same number the monitor
+    // sizing below uses, instead of relying on CSS 100dvh separately -
+    // any drift between the two (different update timing/rounding) was
+    // enough to leave the page technically overflowing and let touch-pan
+    // take over again once the keyboard was open.
+    document.body.style.height = vh + "px";
 
     if (keyboardOpen) {
       // Same width/aspect-ratio math as .monitor in CSS, computed here
