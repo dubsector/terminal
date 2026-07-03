@@ -1,5 +1,9 @@
 # terminal
 
+[![Build check](https://github.com/dubsector/terminal/actions/workflows/ci.yml/badge.svg)](https://github.com/dubsector/terminal/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/dubsector/terminal/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/dubsector/terminal/actions/workflows/github-code-scanning/codeql)
+[![Dependabot](https://img.shields.io/badge/Dependabot-enabled-025E8C?logo=dependabot)](https://github.com/dubsector/terminal/network/updates)
+
 Interactive CRT terminal for [dubsector.dev](https://dubsector.dev), built on [xterm.js](https://github.com/xtermjs/xterm.js/).
 
 ## Development
