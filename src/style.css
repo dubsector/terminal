@@ -7,10 +7,12 @@
 body {
   perspective: 2000px;
   height: 100vh;
+  height: 100dvh; /* mobile-aware viewport height - 100vh includes the area behind a collapsible address bar, which makes the page taller than what's actually visible and lets swipes pan it instead of scrolling the terminal */
   width: 100vw;
   margin: 0;
   background: radial-gradient(circle at 50% 50%, #305055 0%, #101720 100%);
   overflow: hidden;
+  overscroll-behavior: none;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -18,6 +20,18 @@ body {
   flex-direction:column;
   font-family: 'Roboto';
   font-weight: 300
+}
+
+/* Applied via JS (visualViewport resize) when the on-screen keyboard is
+   open, so the CRT isn't left sitting half-covered by it - shifts up just
+   enough to clear the keyboard rather than jumping to the literal top.
+   The JS also sets explicit inline width/height on .monitor when it needs
+   to shrink to fit - aspect-ratio combined with width:auto doesn't
+   reliably shrink below the terminal content's own intrinsic size, so
+   this is computed directly instead of left to CSS to infer. */
+body.keyboard-open {
+  justify-content: flex-start;
+  padding-top: 12px;
 }
 
 .monitor{
