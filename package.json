@@ -1,0 +1,19 @@
+{
+  "name": "dubsector-terminal",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Interactive CRT terminal for dubsector.dev",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "dependencies": {
+    "@xterm/xterm": "^6.0.0",
+    "@xterm/addon-fit": "^0.11.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,95 @@
+*,
+*::after,
+*::before {
+  box-sizing: border-box;
+  transform-style: preserve-3d;
+}
+body {
+  perspective: 2000px;
+  height: 100vh;
+  width: 100vw;
+  margin: 0;
+  background: radial-gradient(circle at 50% 50%, #305055 0%, #101720 100%);
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  flex-direction:column;
+  font-family: 'Roboto';
+  font-weight: 300
+}
+
+.crt{
+  width:720px;
+  aspect-ratio:4 / 3;
+  position:relative;
+  border:40px solid #807760;
+  border-bottom-width:80px;
+  box-shadow:0 10px 15px #0007;
+  border-radius:10px;
+  background:#001000;
+  font-family:'Courier New';
+  padding:20px;
+  color:#30f030;
+  overflow:hidden;
+}
+
+#terminal{
+  width:100%;
+  height:100%;
+}
+#terminal .xterm{
+  height:100%;
+  padding:0;
+}
+#terminal .xterm-viewport{
+  background-color:transparent !important;
+  overflow-y:hidden;
+}
+#terminal .xterm-screen{
+  background-color:transparent;
+}
+.crt::before,.crt::after{
+  content:'';
+  position:absolute;
+  top:0;
+  right:0;
+  bottom:0;
+  left:0;
+  pointer-events:none;
+}
+.crt::before{
+  background:linear-gradient(to bottom, #00000077 0px, #00000077 3px, #00000000 3px, #00000000 10px);
+  background-size:10px 10px;
+  background-repeat:repeat;
+  background-position:0px 0px;
+  animation: freq 5s infinite linear;
+}
+.crt::after{
+  background:radial-gradient(#00000000 50%, #000000aa 100%)
+}
+
+@keyframes freq{
+  0% {background-position:0px 0px}
+  100% {background-position:0px 10px}
+}
+
+.blink {
+  animation: blinker 1s linear infinite;
+}
+
+@keyframes blinker {
+  50% {
+    opacity: 0;
+  }
+}
+#powerBtn{
+  width:60px;
+  height:60px;
+  background:linear-gradient(to bottom, #ffffff55 0px, #ffffff22 3px, #ffffff00 15px);
+  box-shadow:0 2px 1px 2px #00000033;
+  position:relative;
+  top:-60px;
+  left:290px;
+}
