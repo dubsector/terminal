@@ -77,11 +77,14 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", handleViewportResize);
 }
 
-// Just the LED + latch look for now - toggling the actual screen on/off
-// is future work.
+// Purely a display toggle, like a real monitor's power button - the
+// terminal session underneath (history, cwd, whatever's mid-typed) is
+// completely untouched by this, on purpose. Nothing here touches term,
+// inputBuffer, or disables stdin.
 var powerOn = true;
 var powerLed = document.getElementById("powerLed");
 var powerBtnEl = document.getElementById("powerBtn");
+var crtEl = document.querySelector(".crt");
 powerBtnEl.classList.add("pressed"); // starts on, so starts latched in
 powerBtnEl.addEventListener("click", function () {
   powerOn = !powerOn;
@@ -89,6 +92,7 @@ powerBtnEl.addEventListener("click", function () {
   // Old push-push CRT buttons latch in when on, click back out when off -
   // not a spring-back momentary press.
   powerBtnEl.classList.toggle("pressed", powerOn);
+  crtEl.classList.toggle("screen-off", !powerOn);
 });
 
 function randomFakeIp() {
