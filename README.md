@@ -1,6 +1,6 @@
 # terminal
 
-Interactive CRT terminal for [dubsector.dev](https://dubsector.dev), built on [xterm.js](https://xtermjs.org/).
+Interactive CRT terminal for [dubsector.dev](https://dubsector.dev), built on [xterm.js](https://github.com/xtermjs/xterm.js/).
 
 ## Development
 
