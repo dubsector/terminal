@@ -27,6 +27,42 @@ window.addEventListener("resize", function () {
   fitAddon.fit();
 });
 
+function randomFakeIp() {
+  function octet() {
+    return 1 + Math.floor(Math.random() * 223);
+  }
+  return octet() + "." + octet() + "." + octet() + "." + octet();
+}
+
+// Kicked off immediately so it has the whole multi-second boot animation
+// to resolve in - by the time the MOTD is actually written, this has
+// almost always already settled. Falls back to a plausible fake IP if
+// the endpoint is slow, missing (e.g. a fork deployed somewhere that
+// isn't Cloudflare, or plain static hosting with no Worker), or errors.
+var visitorIpPromise = new Promise(function (resolve) {
+  var settled = false;
+  var timer = setTimeout(function () {
+    settled = true;
+    resolve(randomFakeIp());
+  }, 1500);
+  fetch("/api/whoami")
+    .then(function (res) {
+      return res.ok ? res.json() : null;
+    })
+    .then(function (data) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(data && data.ip && data.ip !== "unknown" ? data.ip : randomFakeIp());
+    })
+    .catch(function () {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(randomFakeIp());
+    });
+});
+
 var cwd = "~";
 var inputBuffer = "";
 
@@ -284,11 +320,9 @@ function formatDate(d) {
   );
 }
 
-// Real getty/sshd behavior: the banner and login prompt are printed
-// instantly by the system, only the username is "typed" by a human,
-// the password is never echoed, and the MOTD is dumped in one shot
-// right after auth succeeds (not typed character by character).
-function bootSequence(done) {
+// Built right before display (not at boot start) so "as of" reflects the
+// actual time it's shown, and so it can use the resolved visitor IP.
+function buildMotd(visitorIp) {
   var now = new Date();
   var lastLogin = new Date(now.getTime() - (2 + Math.random() * 6) * 3600000);
   var load = (Math.random() * 0.3).toFixed(2);
@@ -317,7 +351,7 @@ function bootSequence(done) {
         "  IPv4 (eth0):    10.13.37.4",
       ];
 
-  var motd = [
+  return [
     "Welcome to Dubuntu 24.04.2 LTS (GNU/Linux 6.8.0-51-generic x86_64)",
     "",
     " * Documentation:  https://help.ubuntu.com",
@@ -332,11 +366,17 @@ function bootSequence(done) {
       "",
       "0 updates can be applied immediately.",
       "",
-      "Last login: " + formatDate(lastLogin) + " from 10.13.37.1",
+      "Last login: " + formatDate(lastLogin) + " from " + visitorIp,
       "You have mail.",
       "",
     ]);
+}
 
+// Real getty/sshd behavior: the banner and login prompt are printed
+// instantly by the system, only the username is "typed" by a human,
+// the password is never echoed, and the MOTD is dumped in one shot
+// right after auth succeeds (not typed character by character).
+function bootSequence(done) {
   var pwLength = 8 + Math.floor(Math.random() * 6);
 
   term.write("Dubuntu 24.04.2 LTS " + HOSTNAME + " tty1\r\n\r\n");
@@ -351,10 +391,13 @@ function bootSequence(done) {
       typeInvisible(pwLength, function () {
         wait(randBetween(200, 450), function () {
           term.write("\r\n");
-          // The system verifying credentials and assembling the MOTD.
+          // The system verifying credentials and assembling the MOTD. By
+          // now visitorIpPromise has almost always already resolved.
           wait(randBetween(350, 750), function () {
-            writeLines(motd);
-            done();
+            visitorIpPromise.then(function (ip) {
+              writeLines(buildMotd(ip));
+              done();
+            });
           });
         });
       }, 450, 950);
