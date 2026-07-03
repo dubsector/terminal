@@ -89,6 +89,30 @@ var visitorIpPromise = new Promise(function (resolve) {
 
 var cwd = "~";
 var inputBuffer = "";
+// Index into inputBuffer where the next typed character lands - xterm.js
+// only renders/tracks its own screen cursor, it has no idea what "the
+// current input line" even is (that's normally a real shell's job).
+// Every edit below has to move this in lockstep with the terminal's own
+// visual cursor via explicit escape codes.
+var cursorPos = 0;
+
+// Command history for this session (not persisted across reloads).
+// historyIndex points one past the end when not currently browsing.
+var history = [];
+var historyIndex = 0;
+
+// Replaces the whole line, cursor landing at the end - matches real bash
+// on history recall.
+function setInputLine(text) {
+  var forward = inputBuffer.length - cursorPos;
+  if (forward > 0) term.write("\x1b[" + forward + "C");
+  for (var i = 0; i < inputBuffer.length; i++) {
+    term.write("\b \b");
+  }
+  inputBuffer = text;
+  cursorPos = text.length;
+  term.write(text);
+}
 
 function promptString() {
   return USER + "@" + HOSTNAME + ":" + cwd + "# ";
@@ -131,10 +155,7 @@ term.registerLinkProvider({
 });
 
 function clearInputLine() {
-  for (var i = 0; i < inputBuffer.length; i++) {
-    term.write("\b \b");
-  }
-  inputBuffer = "";
+  setInputLine("");
 }
 
 // Same "type it, then run it" flow as the scripted intro, but triggered
@@ -226,6 +247,12 @@ var FS = {
 function runCommand(line) {
   var trimmed = line.trim();
   if (trimmed === "") return;
+
+  // Every path that runs a command funnels through here - manual typing,
+  // the scripted intro, and clicked directory links alike - so history
+  // captures all of them, not just what the visitor typed themselves.
+  history.push(trimmed);
+  historyIndex = history.length;
 
   var parts = trimmed.split(/\s+/);
   var cmd = parts[0];
@@ -433,28 +460,83 @@ function bootSequence(done) {
 }
 
 term.onData(function (data) {
+  if (data === "\x1b[A") {
+    // Up: step back through history, stopping at the oldest entry.
+    if (historyIndex > 0) {
+      historyIndex--;
+      setInputLine(history[historyIndex]);
+    }
+    return;
+  }
+
+  if (data === "\x1b[B") {
+    // Down: step forward, landing back on a blank line past the newest entry.
+    if (historyIndex < history.length - 1) {
+      historyIndex++;
+      setInputLine(history[historyIndex]);
+    } else if (historyIndex < history.length) {
+      historyIndex = history.length;
+      setInputLine("");
+    }
+    return;
+  }
+
+  if (data === "\x1b[D") {
+    // Left: xterm moves its own screen cursor fine on its own, we just
+    // need our logical index to agree with it.
+    if (cursorPos > 0) {
+      cursorPos--;
+      term.write("\x1b[D");
+    }
+    return;
+  }
+
+  if (data === "\x1b[C") {
+    if (cursorPos < inputBuffer.length) {
+      cursorPos++;
+      term.write("\x1b[C");
+    }
+    return;
+  }
+
   var code = data.charCodeAt(0);
 
   if (data === "\r") {
     var line = inputBuffer;
     inputBuffer = "";
+    cursorPos = 0;
     runCommand(line);
     writePrompt();
     return;
   }
 
   if (code === 127) {
-    if (inputBuffer.length > 0) {
-      inputBuffer = inputBuffer.slice(0, -1);
-      term.write("\b \b");
+    // Backspace deletes the character behind the cursor, not necessarily
+    // the last character in the buffer. Redraw everything after the
+    // cursor shifted one column left, plus a trailing space to erase
+    // what used to be the last character on the line, then walk the
+    // screen cursor back to where it logically belongs.
+    if (cursorPos > 0) {
+      var beforeDel = inputBuffer.slice(0, cursorPos - 1);
+      var afterDel = inputBuffer.slice(cursorPos);
+      inputBuffer = beforeDel + afterDel;
+      cursorPos--;
+      term.write("\b" + afterDel + " ");
+      term.write("\x1b[" + (afterDel.length + 1) + "D");
     }
     return;
   }
 
-  if (code < 32) return; // ignore other control chars (arrows etc.)
+  if (code < 32) return; // ignore other control chars (Home/End/etc.)
 
-  inputBuffer += data;
-  term.write(data);
+  // Insert at the cursor rather than always appending, same idea as
+  // backspace above: redraw the shifted tail, then walk back to it.
+  var beforeIns = inputBuffer.slice(0, cursorPos);
+  var afterIns = inputBuffer.slice(cursorPos);
+  inputBuffer = beforeIns + data + afterIns;
+  cursorPos += data.length;
+  term.write(data + afterIns);
+  if (afterIns.length) term.write("\x1b[" + afterIns.length + "D");
 });
 
 // A first-time visitor has no way to know `cd`/`ls` do anything here, so
@@ -502,4 +584,12 @@ window.__debugType = function (str) {
       ? term._core._onData.fire(str[i])
       : term.write(str[i]);
   }
+};
+
+// Test hook: fires a raw escape sequence as a single atomic event (real
+// arrow-key presses arrive this way - __debugType above sends one
+// character per call, which would split "\x1b[A" into three separate,
+// meaningless events).
+window.__debugKey = function (seq) {
+  term._core._onData.fire(seq);
 };
