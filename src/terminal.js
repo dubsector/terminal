@@ -43,6 +43,40 @@ function resizeTerminal() {
 resizeTerminal();
 window.addEventListener("resize", resizeTerminal);
 
+// Re-anchors the CRT to the top (and shrinks it to fit) when the mobile
+// on-screen keyboard is open, instead of leaving it vertically centered
+// and half-covered by the keyboard. There's no direct "keyboard opened"
+// event - visualViewport shrinking noticeably from the page's normal
+// height is the standard way to detect it.
+if (window.visualViewport) {
+  var monitorEl = document.querySelector(".monitor");
+  var layoutHeight = window.innerHeight;
+  var handleViewportResize = function () {
+    var vh = window.visualViewport.height;
+    var keyboardOpen = layoutHeight - vh > 120;
+    document.body.classList.toggle("keyboard-open", keyboardOpen);
+
+    if (keyboardOpen) {
+      // Same width/aspect-ratio math as .monitor in CSS, computed here
+      // instead so it can also be capped by whatever space is actually
+      // left above the keyboard - width:auto + aspect-ratio doesn't
+      // reliably shrink below the terminal's own content size.
+      var normalWidth = Math.min(window.innerWidth * 0.94, 1040);
+      var normalHeight = normalWidth * 0.75;
+      var height = Math.min(normalHeight, vh - 24);
+      var width = (height * 4) / 3;
+      monitorEl.style.width = width + "px";
+      monitorEl.style.height = height + "px";
+    } else {
+      monitorEl.style.width = "";
+      monitorEl.style.height = "";
+    }
+
+    resizeTerminal();
+  };
+  window.visualViewport.addEventListener("resize", handleViewportResize);
+}
+
 // Just the LED for now - toggling the actual screen on/off is future work.
 var powerOn = true;
 var powerLed = document.getElementById("powerLed");
