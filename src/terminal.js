@@ -22,9 +22,33 @@ var term = new Terminal({
 var fitAddon = new FitAddon();
 term.loadAddon(fitAddon);
 term.open(document.getElementById("terminal"));
-fitAddon.fit();
-window.addEventListener("resize", function () {
+
+var terminalEl = document.getElementById("terminal");
+
+// FitAddon only ever adjusts cols/rows to whatever font size is already
+// set - it won't shrink the font itself. The CRT box is now responsive
+// (see .crt in style.css), so without this every viewport would get the
+// same ~18px font and either waste a huge desktop screen on ~60 columns
+// or badly overflow a phone. Targeting a column count from the actual
+// container width keeps the full boot output legible and unwrapped on
+// desktop while still shrinking gracefully on small screens.
+function resizeTerminal() {
+  var targetCols = 92;
+  var fontSize = terminalEl.clientWidth / (targetCols * 0.6);
+  fontSize = Math.max(8, Math.min(19, fontSize));
+  term.options.fontSize = fontSize;
   fitAddon.fit();
+}
+
+resizeTerminal();
+window.addEventListener("resize", resizeTerminal);
+
+// Just the LED for now - toggling the actual screen on/off is future work.
+var powerOn = true;
+var powerLed = document.getElementById("powerLed");
+document.getElementById("powerBtn").addEventListener("click", function () {
+  powerOn = !powerOn;
+  powerLed.classList.toggle("off", !powerOn);
 });
 
 function randomFakeIp() {

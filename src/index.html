@@ -10,10 +10,15 @@
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-<div class="crt">
-  <div id="terminal"></div>
+<div class="monitor">
+  <div class="crt">
+    <div id="terminal"></div>
+  </div>
+  <div class="power-control">
+    <span class="power-led" id="powerLed"></span>
+    <button class="power-btn" id="powerBtn" type="button" aria-label="Power"></button>
+  </div>
 </div>
-<div id="powerBtn"></div>
 <script src="./terminal.js"></script>
 </body>
 </html>
