@@ -80,11 +80,11 @@ function clearInputLine() {
 // Same "type it, then run it" flow as the scripted intro, but triggered
 // by clicking a directory link instead of playing on a timer. Clears out
 // any partially-typed input first so a stray in-progress command can't
-// get mixed in with the click. If the destination isn't empty, this also
-// follows up with an auto-typed `ls -a` - same reasoning as the intro:
-// a visitor who clicked instead of typing still needs to see what's
-// there without guessing the next command. Works for any folder added
-// to FS later, not just projects.
+// get mixed in with the click. Always follows up with an auto-typed
+// `ls -a` - same as the intro - so a click always shows something (even
+// just ". .." for an empty dir) instead of silently landing on a bare
+// prompt that looks like the click did nothing. Works for any folder
+// added to FS later, not just projects.
 function navigateTo(name) {
   term.options.disableStdin = true;
   clearInputLine();
@@ -94,11 +94,6 @@ function navigateTo(name) {
       wait(randBetween(150, 350), function () {
         runCommand("cd " + name);
         writePrompt();
-        if ((FS[cwd] || []).length === 0) {
-          term.options.disableStdin = false;
-          term.focus();
-          return;
-        }
         typeLine(
           "ls -a",
           function () {
@@ -364,7 +359,7 @@ function bootSequence(done) {
         });
       }, 450, 950);
     });
-  }, 2800, 4500);
+  }, 2600, 3600);
 }
 
 term.onData(function (data) {
