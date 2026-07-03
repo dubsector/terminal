@@ -186,10 +186,13 @@ function resolveCd(target) {
 }
 
 // Minimal virtual filesystem: path -> list of entries in that directory.
-// "~" is root's empty home dir. cd/ls both read from this single source
-// of truth so a directory only needs to be added here to become real.
+// "~" is root's empty home dir, separate from "/" (filesystem root) - cd ..
+// from a top-level dir like /var lands at "/", not "~", same as a real box.
+// cd/ls both read from this single source of truth so a directory only
+// needs to be added here to become real.
 var FS = {
   "~": [],
+  "/": ["var"],
   "/var": ["www"],
   "/var/www": ["dubsector.dev"],
   "/var/www/dubsector.dev": ["projects"],
