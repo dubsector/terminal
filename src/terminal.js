@@ -437,6 +437,119 @@ var FILE_LINKS = {
   "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
 };
 
+// True while the fake `cmatrix` is running full-screen. While active, onData
+// below stops routing keystrokes to the normal line editor entirely - the
+// real cmatrix (ncurses, cbreak mode) isn't reading a line of input, it's
+// just watching for a keypress, and the only one it acts on is the SIGINT
+// a real terminal sends for Ctrl+C. Everything else is swallowed, same as
+// real cmatrix ignoring ordinary typing while it's running.
+var matrixActive = false;
+var matrixInterval = null;
+var matrixCols = [];
+
+// Digits + half-width katakana, the standard "Matrix rain" glyph set every
+// terminal port of this uses.
+var MATRIX_CHARS =
+  "0123456789ｦｱｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ";
+
+function randomMatrixChar() {
+  return MATRIX_CHARS.charAt(Math.floor(Math.random() * MATRIX_CHARS.length));
+}
+
+// Each column is an independent falling "drop": y is the head's row
+// (negative until it scrolls on-screen, which staggers columns' start times
+// instead of every column beginning in lockstep), speed/tick slow some
+// columns down relative to others, and len is how many rows of trail follow
+// the head before the column resets from above the top with fresh random
+// timing - a comet rather than a permanent streak, matching real cmatrix
+// rather than a JS canvas knockoff.
+function newMatrixColumn(rows) {
+  return {
+    y: -Math.floor(Math.random() * rows * 2),
+    speed: 1 + Math.floor(Math.random() * 3),
+    tick: 0,
+    len: 6 + Math.floor(Math.random() * Math.max(6, rows - 4)),
+  };
+}
+
+function initMatrixColumns() {
+  matrixCols = [];
+  for (var x = 0; x < term.cols; x++) {
+    matrixCols.push(newMatrixColumn(term.rows));
+  }
+}
+
+// Real cmatrix is an ncurses program: it takes over the whole screen via the
+// terminal's alternate buffer and hides the cursor, then hands both back on
+// exit - the visitor's prior scrollback (prompt, history, everything) is
+// untouched underneath and reappears exactly as it was. \x1b[2J clears the
+// alt buffer up front so a previous cmatrix run (the alt buffer persists
+// hidden, not destroyed, when swapped out) can't bleed into this one.
+function startMatrix() {
+  matrixActive = true;
+  term.write("\x1b[?25l\x1b[?1049h\x1b[2J\x1b[H");
+  initMatrixColumns();
+  matrixInterval = setInterval(drawMatrixFrame, 50);
+}
+
+// Ctrl+C is the only exit, matching real cmatrix's SIGINT handler (which
+// restores the terminal via endwin() before exiting) rather than any-key-
+// to-quit. Leaving the alt buffer and re-showing the cursor is the exact
+// inverse of startMatrix's setup, then a fresh prompt is printed - same as
+// a real shell reprompting once the foreground process it was waiting on
+// exits.
+function stopMatrix() {
+  matrixActive = false;
+  clearInterval(matrixInterval);
+  matrixInterval = null;
+  term.write("\x1b[?1049l\x1b[?25h");
+  writePrompt();
+}
+
+function drawMatrixFrame() {
+  var cols = term.cols;
+  var rows = term.rows;
+  // Window resized mid-run: real cmatrix redraws on SIGWINCH rather than
+  // running off the edge of a buffer sized for the old dimensions.
+  if (matrixCols.length !== cols) {
+    term.write("\x1b[2J");
+    initMatrixColumns();
+  }
+
+  var out = "";
+  for (var x = 0; x < cols; x++) {
+    var col = matrixCols[x];
+    col.tick++;
+    if (col.tick < col.speed) continue;
+    col.tick = 0;
+    col.y++;
+
+    var headRow = col.y;
+    var prevRow = headRow - 1;
+    var tailRow = headRow - col.len;
+
+    if (headRow >= 0 && headRow < rows) {
+      out +=
+        "\x1b[" + (headRow + 1) + ";" + (x + 1) + "H\x1b[1m" +
+        randomMatrixChar() + "\x1b[0m";
+    }
+    if (prevRow >= 0 && prevRow < rows) {
+      // Re-rolled (not just dimmed) each pass through here - real cmatrix's
+      // trail glyphs shimmer/change over time rather than freezing solid.
+      out +=
+        "\x1b[" + (prevRow + 1) + ";" + (x + 1) + "H\x1b[2m" +
+        randomMatrixChar() + "\x1b[0m";
+    }
+    if (tailRow >= 0 && tailRow < rows) {
+      out += "\x1b[" + (tailRow + 1) + ";" + (x + 1) + "H ";
+    }
+    if (tailRow > rows) {
+      matrixCols[x] = newMatrixColumn(rows);
+    }
+  }
+  if (out) term.write(out);
+}
+
 function runCommand(line) {
   var trimmed = line.trim();
   if (trimmed === "") return;
@@ -499,6 +612,11 @@ function runCommand(line) {
       });
     }
     return;
+  }
+
+  if (cmd === "cmatrix") {
+    startMatrix();
+    return "cmatrix";
   }
 
   term.write("\r\nbash: " + cmd + ": command not found");
@@ -705,6 +823,11 @@ function handleTab() {
 }
 
 term.onData(function (data) {
+  if (matrixActive) {
+    if (data === "\x03") stopMatrix();
+    return;
+  }
+
   if (data === "\t") {
     handleTab();
     return;
@@ -755,8 +878,8 @@ term.onData(function (data) {
     var line = inputBuffer;
     inputBuffer = "";
     cursorPos = 0;
-    runCommand(line);
-    writePrompt();
+    var result = runCommand(line);
+    if (result !== "cmatrix") writePrompt();
     return;
   }
 
