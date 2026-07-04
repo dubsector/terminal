@@ -318,10 +318,25 @@ body.keyboard-open {
   box-shadow:0 2px 2px #00000055, inset 0 1px 1px #ffffff77;
   padding:0;
   cursor:pointer;
+  -webkit-appearance:none;
+  appearance:none;
+  -webkit-tap-highlight-color:transparent;
 }
 
 .power-btn:active{
   box-shadow:0 1px 1px #00000055, inset 0 1px 2px #00000088;
+}
+
+/* Mobile browsers rectangle-highlight the button on tap and/or draw a
+   default focus ring after touch activation - both clash with the round
+   knob. Suppress the outline visually but keep it for keyboard focus via
+   :focus-visible so accessibility isn't lost. */
+.power-btn:focus{
+  outline:none;
+}
+.power-btn:focus-visible{
+  outline:2px solid #30f030;
+  outline-offset:2px;
 }
 
 /* Old push-push CRT power switches latch in when on and click back out
