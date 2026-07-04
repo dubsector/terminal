@@ -216,6 +216,14 @@ function writePrompt() {
 // visitor click" without re-parsing rendered text.
 var dirLinks = [];
 
+// True while a clicked link's "cd" + "ls -a" replay is mid-animation.
+// disableStdin only blocks keyboard input, not further link clicks, so
+// without this guard clicking a second link before the first one finishes
+// typing starts two overlapping typeLine/runCommand sequences writing to
+// the terminal at once - garbled output. Clicks are simply ignored while
+// one is already in flight, rather than queued.
+var navigating = false;
+
 term.registerLinkProvider({
   provideLinks: function (bufferLineNumber, callback) {
     var matches = dirLinks.filter(function (l) {
@@ -234,7 +242,11 @@ term.registerLinkProvider({
             end: { x: l.endCol, y: bufferLineNumber },
           },
           activate: function () {
-            navigateTo(l.name);
+            if (l.url) {
+              window.open(l.url, "_blank", "noopener,noreferrer");
+            } else if (!navigating) {
+              navigateTo(l.name, l.origin);
+            }
           },
         };
       })
@@ -246,76 +258,158 @@ function clearInputLine() {
   setInputLine("");
 }
 
-// Same "type it, then run it" flow as the scripted intro, but triggered
-// by clicking a directory link instead of playing on a timer. Clears out
-// any partially-typed input first so a stray in-progress command can't
-// get mixed in with the click. Always follows up with an auto-typed
-// `ls -a` - same as the intro - so a click always shows something (even
-// just ". .." for an empty dir) instead of silently landing on a bare
-// prompt that looks like the click did nothing. Works for any folder
-// added to FS later, not just projects.
-function navigateTo(name) {
-  term.options.disableStdin = true;
-  clearInputLine();
-  typeLine(
-    "cd " + name,
-    function () {
-      wait(randBetween(150, 350), function () {
-        runCommand("cd " + name);
-        writePrompt();
-        typeLine(
-          "ls -a",
-          function () {
-            wait(randBetween(150, 350), function () {
-              runCommand("ls -a");
-              writePrompt();
-              term.options.disableStdin = false;
-              term.focus();
-            });
-          },
-          700,
-          1300
-        );
-      });
-    },
-    150,
-    400
-  );
+// Splits an absolute path into segments for comparison in computeHops
+// below. "~" is a separate root (root's own home dir, distinct from "/" -
+// see FS above) with no segments in common with anything under "/", so it
+// gets a sentinel null rather than being treated as a zero-length path.
+function pathSegments(p) {
+  return p === "~" ? null : p.split("/").filter(Boolean);
 }
 
-// Records where each directory name landed on screen after an `ls` write
-// completes, so the link provider can find it later. list/entries mirror
-// what was just printed: list is the full displayed row (may include "."
-// and ".."), entries is the subset that are real, cd-able directories.
-function registerDirLinks(list, entries) {
+// Relative "cd" hops to walk from one absolute path to another: up to
+// their common ancestor, then down into the target - the way a person
+// would navigate there without knowing (or typing) the full absolute
+// path. Each hop is a single plain segment or "..", so every hop is a
+// valid argument to the existing single-segment cd resolution (no need to
+// teach resolveCd about compound "../.." paths). Falls back to a single
+// absolute-path hop when "~" is on either end, since there's no relative
+// path between the two root systems.
+function computeHops(from, to) {
+  var fromParts = pathSegments(from);
+  var toParts = pathSegments(to);
+  if (!fromParts || !toParts) return [to];
+  var i = 0;
+  while (i < fromParts.length && i < toParts.length && fromParts[i] === toParts[i]) {
+    i++;
+  }
+  var hops = [];
+  for (var u = i; u < fromParts.length; u++) hops.push("..");
+  for (var d = i; d < toParts.length; d++) hops.push(toParts[d]);
+  return hops;
+}
+
+// Same "type it, then run it" flow as the scripted intro, but triggered by
+// clicking a directory link instead of playing on a timer. Clears out any
+// partially-typed input first so a stray in-progress command can't get
+// mixed in with the click. Works for any folder added to FS later, not
+// just projects.
+//
+// origin is the directory this link was printed from. Combined with the
+// current cwd, computeHops decides how many "cd" steps are needed: if the
+// link came from the directory the visitor is standing in right now,
+// that's just one plain "cd <name>", same as typing it, which fails the
+// same way typing it would if something's actually wrong. If it's a stale
+// link from elsewhere in the scrollback, a single relative "cd <name>"
+// would often fail even though the directory obviously still exists - so
+// instead this walks there hop by hop, which (since both ends are real FS
+// paths) can't fail. Either way "ls -a" only replays after the final hop
+// succeeds - a failed cd already reported its own bash error and left cwd
+// untouched, so re-listing afterward would just be a pointless (and
+// confusing) repeat of whatever's already on screen.
+function navigateTo(name, origin) {
+  navigating = true;
+  term.options.disableStdin = true;
+  clearInputLine();
+
+  var hops = computeHops(cwd, resolveCd(name, origin));
+  // Zero hops means this (stale) link resolves to the exact directory the
+  // visitor is already standing in - there's no sensible walk to animate,
+  // so fall back to the literal clicked name. Every hop below runs through
+  // the exact same cd resolution manual typing would use, so this isn't a
+  // special case logically: it fails for the same reason typing
+  // "cd <name>" from inside that directory would - there's no subdirectory
+  // by that name in *this* directory, only a same-named one elsewhere.
+  if (!hops.length) hops = [name];
+
+  function finish() {
+    navigating = false;
+    term.options.disableStdin = false;
+    term.focus();
+  }
+
+  function runHop(i) {
+    typeLine(
+      "cd " + hops[i],
+      function () {
+        wait(randBetween(150, 350), function () {
+          var ok = runCommand("cd " + hops[i]);
+          writePrompt();
+          if (!ok) {
+            finish();
+            return;
+          }
+          if (i + 1 < hops.length) {
+            runHop(i + 1);
+            return;
+          }
+          typeLine(
+            "ls -a",
+            function () {
+              wait(randBetween(150, 350), function () {
+                runCommand("ls -a");
+                writePrompt();
+                finish();
+              });
+            },
+            700,
+            1300
+          );
+        });
+      },
+      150,
+      400
+    );
+  }
+
+  runHop(0);
+}
+
+// Records where each directory/file-link name landed on screen after an
+// `ls` write completes, so the link provider can find it later. list/entries
+// mirror what was just printed: list is the full displayed row (may include
+// "." and ".."), entries is the subset that are real, cd-able directories.
+// linkNames is the subset of entries whose name IS an external URL (rather
+// than a plain directory name) - clicking one opens that URL instead of
+// cd-ing, since it isn't a real directory. atCwd is the directory this
+// listing was printed from, stored as each entry's origin so navigateTo
+// can later tell a live "cd <name>" apart from a stale, elsewhere-printed
+// one (see navigateTo/computeHops for why that distinction matters).
+function registerDirLinks(list, entries, linkNames, atCwd) {
   var line = term.buffer.active.baseY + term.buffer.active.cursorY + 1;
   var col = 1;
   for (var i = 0; i < list.length; i++) {
     var name = list[i];
     if (entries.indexOf(name) !== -1) {
+      var isLink = linkNames && linkNames.indexOf(name) !== -1;
       dirLinks.push({
         line: line,
         startCol: col,
         endCol: col + name.length - 1,
         name: name,
+        url: isLink ? name : undefined,
+        origin: isLink ? undefined : atCwd,
       });
     }
     col += name.length + 2;
   }
 }
 
-// Resolves a cd target against the current working directory.
-function resolveCd(target) {
+// Resolves a cd target against a working directory (defaults to the
+// current one) - passing an explicit base lets callers (navigateTo, via
+// computeHops) resolve a path against a directory other than wherever the
+// visitor is right now.
+function resolveCd(target, base) {
+  var from = base === undefined ? cwd : base;
   if (!target || target === "~") return "~";
   if (target === "..") {
-    if (cwd === "~" || cwd === "/") return cwd;
-    var parts = cwd.split("/").filter(Boolean);
+    if (from === "~" || from === "/") return from;
+    var parts = from.split("/").filter(Boolean);
     parts.pop();
     return parts.length ? "/" + parts.join("/") : "/";
   }
   if (target.charAt(0) === "/") return target;
-  var base = cwd === "~" ? "" : cwd;
-  return base + "/" + target;
+  var baseStr = from === "~" ? "" : from;
+  return baseStr + "/" + target;
 }
 
 // Minimal virtual filesystem: path -> list of entries in that directory.
@@ -328,8 +422,16 @@ var FS = {
   "/": ["var"],
   "/var": ["www"],
   "/var/www": ["dubsector.dev"],
-  "/var/www/dubsector.dev": ["projects"],
+  "/var/www/dubsector.dev": ["projects", "github"],
   "/var/www/dubsector.dev/projects": [],
+  "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
+};
+
+// Files that are really external links: cwd -> array of entry names (from
+// FS above) that open a new tab instead of cd-ing when clicked. The entry
+// name itself IS the target URL, not a separate label pointing at one.
+var FILE_LINKS = {
+  "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
 };
 
 function runCommand(line) {
@@ -356,12 +458,12 @@ function runCommand(line) {
     var target = resolveCd(arg);
     if (target === "~" || FS.hasOwnProperty(target)) {
       cwd = target;
-    } else {
-      term.write(
-        "\r\nbash: cd: " + (arg || "~") + ": No such file or directory"
-      );
+      return true;
     }
-    return;
+    term.write(
+      "\r\nbash: cd: " + (arg || "~") + ": No such file or directory"
+    );
+    return false;
   }
 
   if (cmd === "ls") {
@@ -371,19 +473,26 @@ function runCommand(line) {
       })
       .join("");
     var showAll = flags.indexOf("a") !== -1;
-    var entries = (FS[cwd] || []).slice();
+    // Captured up front rather than read as `cwd` inside the write callback
+    // below - registerDirLinks needs the directory this listing was
+    // actually printed from, not wherever cwd happens to point by the time
+    // the callback runs.
+    var atCwd = cwd;
+    var entries = (FS[atCwd] || []).slice();
+    var linkNames = FILE_LINKS[atCwd] || [];
     var list = showAll ? [".", ".."].concat(entries) : entries;
     if (list.length) {
-      // Underline every real directory name so it reads as clickable even
-      // before a visitor hovers it (hover-only affordance doesn't exist on
-      // touchscreens). "." and ".." stay plain - not worth linking.
+      // Underline every real directory name (and file-link name) so it
+      // reads as clickable even before a visitor hovers it (hover-only
+      // affordance doesn't exist on touchscreens). "." and ".." stay plain -
+      // not worth linking.
       var display = list
         .map(function (name) {
           return entries.indexOf(name) !== -1 ? "\x1b[4m" + name + "\x1b[24m" : name;
         })
         .join("  ");
       term.write("\r\n" + display, function () {
-        registerDirLinks(list, entries);
+        registerDirLinks(list, entries, linkNames, atCwd);
       });
     }
     return;
