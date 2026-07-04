@@ -84,11 +84,14 @@ if (window.visualViewport) {
 //
 // The visual collapse/expand is a CSS keyframe animation (crtPowerOff/
 // crtPowerOn in style.css), played by adding .powering-off/.powering-on
-// for its duration. POWER_ANIM_MS must match the "620ms" duration set on
-// those keyframes there - it's what tells this code when the animation
-// has finished and it's safe to settle into the static .screen-off (or
-// fully-on) resting state and accept another click.
-var POWER_ANIM_MS = 620;
+// for its duration - these two durations must match the ones set on
+// those keyframes there. They're deliberately different: powering off
+// (raster collapse) is near-instant on real hardware, while powering on
+// is a slower brightness warm-up, so it needs more time to play out
+// before it's safe to settle into the resting state and accept another
+// click.
+var POWER_OFF_ANIM_MS = 620;
+var POWER_ON_ANIM_MS = 550;
 var powerOn = true;
 var powerAnimating = false;
 var powerLed = document.getElementById("powerLed");
@@ -112,7 +115,7 @@ powerBtnEl.addEventListener("click", function () {
     crtEl.classList.remove("powering-on", "powering-off");
     crtEl.classList.toggle("screen-off", !powerOn);
     powerAnimating = false;
-  }, POWER_ANIM_MS);
+  }, powerOn ? POWER_ON_ANIM_MS : POWER_OFF_ANIM_MS);
 });
 
 // Rare, irregularly-timed vertical-hold hiccup (a bright band rolling down

@@ -194,31 +194,32 @@ body.keyboard-open {
   30%{transform:translateY(-1px)}
 }
 
-/* --- Power on/off: a real CRT doesn't fade, its beam collapses to a
-   bright horizontal line, then a dot, before the tube goes dark (and the
-   reverse - a dot expanding with a brief magnetic "degauss" wobble - when
-   powering back on). Both keyframe sets keep --phosphor-glow chained onto
-   every filter stop so the bloom doesn't flatten out mid-animation. */
-.crt.powering-off,
+/* --- Power off/on: asymmetric on purpose, matching real CRT electronics.
+   Cutting power collapses the raster to a bright line then a dot almost
+   instantly (vertical deflection needs continuous drive current and dies
+   first) before the tube goes dark - that part is fast, ~620ms. Powering
+   back on is different: the deflection yoke reaches full scan size almost
+   immediately, well before the cathode has heated up enough to emit a
+   visible beam, so there's no reverse "dot growing outward" in real
+   hardware - just a full-size, dark picture that fades up quickly (no
+   scale change at all, just a brightness ramp) with a faint degauss
+   skew wobble riding along. Both keyframe sets keep --phosphor-glow
+   chained onto every filter stop so the bloom doesn't flatten out
+   mid-animation. */
+.crt.powering-off{
+  animation:crtPowerOffGlow 620ms ease-out forwards;
+}
 .crt.powering-on{
-  animation-duration:620ms;
-  animation-timing-function:ease-out;
-  animation-fill-mode:forwards;
+  animation:crtPowerOnGlow 550ms ease-out forwards;
 }
-.crt.powering-off{ animation-name:crtPowerOffGlow; }
-.crt.powering-on{ animation-name:crtPowerOnGlow; }
 .crt.powering-off::before,
+.crt.powering-off::after{
+  animation:crtOverlayFadeOut 620ms ease-out forwards;
+}
 .crt.powering-on::before,
-.crt.powering-off::after,
 .crt.powering-on::after{
-  animation-duration:620ms;
-  animation-fill-mode:forwards;
-  animation-timing-function:ease-out;
+  animation:crtOverlayFadeIn 550ms ease-out forwards;
 }
-.crt.powering-off::before,
-.crt.powering-off::after{ animation-name:crtOverlayFadeOut; }
-.crt.powering-on::before,
-.crt.powering-on::after{ animation-name:crtOverlayFadeIn; }
 .crt.powering-off .crt-flicker,
 .crt.powering-on .crt-flicker{
   opacity:0;
@@ -228,7 +229,7 @@ body.keyboard-open {
   animation:crtPowerOff 620ms cubic-bezier(.4,0,.7,1) forwards;
 }
 .crt.powering-on #terminal{
-  animation:crtPowerOn 620ms cubic-bezier(.2,.6,.3,1) forwards;
+  animation:crtPowerOn 550ms ease-out forwards;
 }
 
 @keyframes crtOverlayFadeOut{
@@ -250,14 +251,11 @@ body.keyboard-open {
   100% {transform:scaleY(.012) scaleX(.001); filter:brightness(0) var(--phosphor-glow);   opacity:0}
 }
 @keyframes crtPowerOn{
-  0%   {transform:scaleY(.012) scaleX(.001);                  filter:brightness(0) var(--phosphor-glow);   opacity:0}
-  12%  {transform:scaleY(.012) scaleX(.04);                   filter:brightness(3) var(--phosphor-glow);   opacity:1}
-  40%  {transform:scaleY(.012) scaleX(1.1);                   filter:brightness(2.6) var(--phosphor-glow); opacity:1}
-  55%  {transform:scaleY(1.04) scaleX(1.02) skewX(1.2deg);    filter:brightness(1.9) var(--phosphor-glow); opacity:1}
-  65%  {transform:scaleY(.98) scaleX(.99) skewX(-.8deg);      filter:brightness(1.3) var(--phosphor-glow); opacity:1}
-  75%  {transform:scaleY(1.01) scaleX(1) skewX(.4deg);        filter:brightness(1.1) var(--phosphor-glow); opacity:1}
-  85%  {transform:scaleY(.995) skewX(-.15deg);                filter:brightness(1.02) var(--phosphor-glow);opacity:1}
-  100% {transform:scaleY(1) scaleX(1) skewX(0deg);            filter:brightness(1) var(--phosphor-glow);   opacity:1}
+  0%   {transform:skewX(0deg);    filter:brightness(0) var(--phosphor-glow);   opacity:1}
+  10%  {transform:skewX(.8deg);   filter:brightness(.2) var(--phosphor-glow);  opacity:1}
+  30%  {transform:skewX(-.4deg);  filter:brightness(.55) var(--phosphor-glow); opacity:1}
+  55%  {transform:skewX(.15deg);  filter:brightness(.8) var(--phosphor-glow);  opacity:1}
+  100% {transform:skewX(0deg);    filter:brightness(1) var(--phosphor-glow);   opacity:1}
 }
 @keyframes crtPowerOffGlow{
   0%   {background-color:#001000}
@@ -267,8 +265,7 @@ body.keyboard-open {
 }
 @keyframes crtPowerOnGlow{
   0%   {background-color:#000}
-  15%  {background-color:#eafff0}
-  45%  {background-color:#003300}
+  40%  {background-color:#001a00}
   100% {background-color:#001000}
 }
 
