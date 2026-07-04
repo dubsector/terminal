@@ -619,6 +619,11 @@ function runCommand(line) {
     return "cmatrix";
   }
 
+  if (cmd === "exit" || cmd === "logout") {
+    startLogout();
+    return "logout";
+  }
+
   term.write("\r\nbash: " + cmd + ": command not found");
 }
 
@@ -744,6 +749,121 @@ function buildMotd(visitorIp) {
     ]);
 }
 
+// Null except between `exit`/`logout` and a page reload, when it's
+// "username" or "password" - which of the two the next keystrokes are
+// building up in loginBuffer. Deliberately a dead end: there is no
+// credential check anywhere on this page, not even a real password
+// string (see bootSequence's pwLength - it's only ever a character
+// *count* for the invisible-typing animation, never an actual value).
+// The "root" login on first load is typed by that scripted animation,
+// the visitor never types it themselves - so once they exit, they're
+// standing at a real login prompt for a machine whose password they
+// were never given, same as it'd go in real life. Every attempt fails,
+// forever; the only way back in is reloading the page (the boot
+// sequence rerunning is the "power cycle").
+var loginMode = null;
+var loginBuffer = "";
+
+// fail2ban-style lockout after repeated failures - counts across every
+// attempt made at this trapped prompt (there's no successful-login path
+// to ever reset it on, see above), same jail/ban semantics fail2ban
+// itself applies per source IP rather than per single connection.
+var LOGIN_MAX_ATTEMPTS = 3;
+var loginAttempts = 0;
+
+// True for good once the ban lands - checked directly in onData (same as
+// matrixActive below) rather than left to term.options.disableStdin alone,
+// since disableStdin only stops the DOM from generating keystrokes and
+// isn't a substitute for actually refusing to act on input at the code
+// level. A real fail2ban DROP doesn't come back until the ban expires;
+// here that's never, short of reloading the page.
+var banned = false;
+
+function writeLoginBanner() {
+  term.write(OS_NAME + " " + OS_VERSION + " " + HOSTNAME + " tty1\r\n\r\n");
+  term.write(HOSTNAME + " login: ");
+}
+
+// `exit`/`logout` prints "logout" and hands control back to getty, which
+// respawns the login prompt from scratch - same banner as first boot,
+// since this is a fresh getty, not a retry within the same login attempt
+// (see handleLoginKeystroke for why a failed *attempt* doesn't repeat it).
+function startLogout() {
+  term.options.disableStdin = true;
+  cwd = "~";
+  dirLinks = [];
+  term.write("\r\nlogout\r\n");
+  wait(randBetween(300, 600), function () {
+    term.clear();
+    writeLoginBanner();
+    loginMode = "username";
+    loginBuffer = "";
+    term.options.disableStdin = false;
+    term.focus();
+  });
+}
+
+// Minimal real (non-scripted) line input for the post-exit login prompt -
+// no arrow keys, no history, no tab completion, since a real login
+// program's readline doesn't support any of that either. Username echoes
+// normally; password never echoes anything, including backspace, exactly
+// like a real terminal's password prompt (the keystroke still removes
+// from loginBuffer, it's just invisible, same trick as typeInvisible above
+// but driven by real keystrokes instead of a scripted delay).
+function handleLoginKeystroke(data) {
+  if (data === "\r") {
+    if (loginMode === "username") {
+      loginBuffer = "";
+      term.write("\r\nPassword: ");
+      loginMode = "password";
+      return;
+    }
+    term.write("\r\n");
+    term.options.disableStdin = true;
+    wait(randBetween(300, 600), function () {
+      loginAttempts++;
+      if (loginAttempts >= LOGIN_MAX_ATTEMPTS) {
+        // Same visitor IP (or fallback fake one) already resolved for the
+        // MOTD's "Last login: ... from" line - reused here so the ban
+        // targets the same address that "connected" in the first place.
+        // Set before the promise resolves, not inside its callback, so
+        // nothing typed during that brief gap can slip through.
+        banned = true;
+        visitorIpPromise.then(function (ip) {
+          var port = 1024 + Math.floor(Math.random() * 64511);
+          term.write(
+            "\r\nLogin incorrect\r\n" +
+              "Disconnected from authenticating user root " + ip +
+              " port " + port + " [preauth]\r\n" +
+              "fail2ban: Ban " + ip + "\r\n"
+          );
+        });
+        return;
+      }
+      term.write("\r\nLogin incorrect\r\n" + HOSTNAME + " login: ");
+      loginMode = "username";
+      loginBuffer = "";
+      term.options.disableStdin = false;
+    });
+    return;
+  }
+
+  if (data.charCodeAt(0) === 127) {
+    if (loginBuffer.length > 0) {
+      loginBuffer = loginBuffer.slice(0, -1);
+      if (loginMode === "username") term.write("\b \b");
+    }
+    return;
+  }
+
+  // Ignore escape sequences (arrows etc.) and other control chars - a
+  // real login prompt doesn't act on them either.
+  if (data.length !== 1 || data.charCodeAt(0) < 32) return;
+
+  loginBuffer += data;
+  if (loginMode === "username") term.write(data);
+}
+
 // Real getty/sshd behavior: the banner and login prompt are printed
 // instantly by the system, only the username is "typed" by a human,
 // the password is never echoed, and the MOTD is dumped in one shot
@@ -751,8 +871,7 @@ function buildMotd(visitorIp) {
 function bootSequence(done) {
   var pwLength = 8 + Math.floor(Math.random() * 6);
 
-  term.write(OS_NAME + " " + OS_VERSION + " " + HOSTNAME + " tty1\r\n\r\n");
-  term.write(HOSTNAME + " login: ");
+  writeLoginBanner();
   // This is a webpage, not a real console - a visitor's attention is on
   // the page as a whole first, not glued to this prompt. Give them room
   // to notice the CRT, read a little, before anything starts typing.
@@ -823,8 +942,15 @@ function handleTab() {
 }
 
 term.onData(function (data) {
+  if (banned) return;
+
   if (matrixActive) {
     if (data === "\x03") stopMatrix();
+    return;
+  }
+
+  if (loginMode) {
+    handleLoginKeystroke(data);
     return;
   }
 
@@ -879,7 +1005,7 @@ term.onData(function (data) {
     inputBuffer = "";
     cursorPos = 0;
     var result = runCommand(line);
-    if (result !== "cmatrix") writePrompt();
+    if (result !== "cmatrix" && result !== "logout") writePrompt();
     return;
   }
 
