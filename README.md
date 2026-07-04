@@ -8,7 +8,7 @@ Interactive CRT terminal for [dubsector.dev](https://dubsector.dev), built on [x
 
 ## Goal
 
-Replace the old static CodePen-style CRT mockup with a real, explorable terminal that visitors can actually type into. It boots into a fake login (MOTD shows the visitor's real IP via a Cloudflare Worker endpoint), then drops into a handbuilt shell over a virtual filesystem `ls`, `cd`, `cat`, tab completion, command history, and cursor-aware line editing all implemented on top of xterm.js's raw keystroke events, since xterm.js itself only emulates a terminal and has no shell semantics of its own. The CRT chassis (power button, screen-off animation, phosphor glow) is there to sell the illusion of a real terminal, not just a themed textbox.
+Replace old static CRT mockup with a real, explorable terminal that visitors can actually type into. It boots into a fake login (MOTD shows the visitor's real IP via a Cloudflare Worker endpoint), then drops into a handbuilt shell over a virtual filesystem `ls`, `cd`, `cat`, tab completion, command history, and cursor-aware line editing all implemented on top of xterm.js's raw keystroke events, since xterm.js itself only emulates a terminal and has no shell semantics of its own. The CRT chassis (power button, screen-off animation, phosphor glow) is there to sell the illusion of a real terminal, not just a themed textbox.
 
 ## Development
 
