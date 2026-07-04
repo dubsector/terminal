@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="1.6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- CRT bezel -->
+  <rect x="2" y="2" width="60" height="60" rx="9" fill="#807760"/>
+  <rect x="2" y="2" width="60" height="60" rx="9" fill="none" stroke="#5c5546" stroke-width="1"/>
+
+  <!-- Screen (thicker bottom bezel, matching the real monitor) -->
+  <rect x="10" y="9" width="44" height="38" rx="3" fill="#001000"/>
+
+  <!-- Phosphor prompt: ">" chevron + blinking block cursor, glowing -->
+  <g filter="url(#glow)">
+    <path d="M17 18 L26 28 L17 38" fill="none" stroke="#30f030" stroke-width="4"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="31" y="32" width="12" height="7" fill="#30f030"/>
+  </g>
+
+  <!-- Bottom bezel power control -->
+  <circle cx="46" cy="55" r="2.1" fill="#30f030">
+    <animate attributeName="opacity" values="1;1;0.25;1" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="55" cy="55" r="4.3" fill="#a89e82" stroke="#5c5546" stroke-width="0.6"/>
+</svg>
