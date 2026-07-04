@@ -4,6 +4,9 @@ import "@xterm/xterm/css/xterm.css";
 
 var HOSTNAME = "websvr";
 var USER = "root";
+var OS_NAME = "Dubuntu";
+var OS_VERSION = "26.04.1 LTS";
+var KERNEL_VERSION = "6.14.0-15-generic";
 
 var term = new Terminal({
   fontFamily: "'Courier New', monospace",
@@ -603,7 +606,7 @@ function buildMotd(visitorIp) {
       ];
 
   return [
-    "Welcome to Dubuntu 24.04.2 LTS (GNU/Linux 6.8.0-51-generic x86_64)",
+    "Welcome to " + OS_NAME + " " + OS_VERSION + " (GNU/Linux " + KERNEL_VERSION + " x86_64)",
     "",
     " * Documentation:  https://help.ubuntu.com",
     " * Management:     https://landscape.canonical.com",
@@ -630,7 +633,7 @@ function buildMotd(visitorIp) {
 function bootSequence(done) {
   var pwLength = 8 + Math.floor(Math.random() * 6);
 
-  term.write("Dubuntu 24.04.2 LTS " + HOSTNAME + " tty1\r\n\r\n");
+  term.write(OS_NAME + " " + OS_VERSION + " " + HOSTNAME + " tty1\r\n\r\n");
   term.write(HOSTNAME + " login: ");
   // This is a webpage, not a real console - a visitor's attention is on
   // the page as a whole first, not glued to this prompt. Give them room
