@@ -81,19 +81,60 @@ if (window.visualViewport) {
 // terminal session underneath (history, cwd, whatever's mid-typed) is
 // completely untouched by this, on purpose. Nothing here touches term,
 // inputBuffer, or disables stdin.
+//
+// The visual collapse/expand is a CSS keyframe animation (crtPowerOff/
+// crtPowerOn in style.css), played by adding .powering-off/.powering-on
+// for its duration. POWER_ANIM_MS must match the "620ms" duration set on
+// those keyframes there - it's what tells this code when the animation
+// has finished and it's safe to settle into the static .screen-off (or
+// fully-on) resting state and accept another click.
+var POWER_ANIM_MS = 620;
 var powerOn = true;
+var powerAnimating = false;
 var powerLed = document.getElementById("powerLed");
 var powerBtnEl = document.getElementById("powerBtn");
 var crtEl = document.querySelector(".crt");
 powerBtnEl.classList.add("pressed"); // starts on, so starts latched in
 powerBtnEl.addEventListener("click", function () {
+  if (powerAnimating) return;
+  powerAnimating = true;
   powerOn = !powerOn;
   powerLed.classList.toggle("off", !powerOn);
   // Old push-push CRT buttons latch in when on, click back out when off -
   // not a spring-back momentary press.
   powerBtnEl.classList.toggle("pressed", powerOn);
-  crtEl.classList.toggle("screen-off", !powerOn);
+
+  if (powerOn) crtEl.classList.remove("screen-off");
+  crtEl.classList.toggle("powering-on", powerOn);
+  crtEl.classList.toggle("powering-off", !powerOn);
+
+  setTimeout(function () {
+    crtEl.classList.remove("powering-on", "powering-off");
+    crtEl.classList.toggle("screen-off", !powerOn);
+    powerAnimating = false;
+  }, POWER_ANIM_MS);
 });
+
+// Rare, irregularly-timed vertical-hold hiccup (a bright band rolling down
+// the tube while the picture jitters) - reads as an analog fault precisely
+// because it's not on a fixed loop. Skipped while the screen is off or
+// mid power-toggle so it never fights the power animation for the same
+// #terminal transform.
+var glitchEl = document.querySelector(".crt-glitch");
+function scheduleGlitch() {
+  setTimeout(function () {
+    if (powerOn && !powerAnimating) {
+      glitchEl.classList.add("active");
+      terminalEl.classList.add("glitching");
+      setTimeout(function () {
+        glitchEl.classList.remove("active");
+        terminalEl.classList.remove("glitching");
+      }, 900);
+    }
+    scheduleGlitch();
+  }, randBetween(18000, 42000));
+}
+scheduleGlitch();
 
 function randomFakeIp() {
   function octet() {

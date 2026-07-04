@@ -41,6 +41,17 @@ body.keyboard-open {
   aspect-ratio:4 / 3;
 }
 
+:root{
+  /* Green phosphor bloom - this is a monochrome terminal, not a color
+     CRT/arcade tube, so there's deliberately no RGB aperture-grille mask
+     or chromatic aberration here (a single electron gun can't mis-converge
+     colors it never had). Bright pixels on a real phosphor screen bleed
+     light into the dark area around them; drop-shadow's alpha-silhouette
+     blur reproduces that halo cheaply since xterm's canvas is otherwise
+     opaque to CSS glow tricks. */
+  --phosphor-glow: drop-shadow(0 0 1px rgba(48,240,48,.55)) drop-shadow(0 0 3px rgba(48,240,48,.35)) drop-shadow(0 0 7px rgba(48,240,48,.16));
+}
+
 .crt{
   width:100%;
   height:100%;
@@ -55,30 +66,33 @@ body.keyboard-open {
   padding:clamp(8px, 2vw, 20px);
   color:#30f030;
   overflow:hidden;
-  transition:background-color 0.25s ease-in 0.05s;
 }
 
 /* Purely a display toggle - the terminal underneath (session, history,
    cwd) keeps running untouched, same as a real monitor's power button
-   not affecting the computer behind it. Old CRTs collapse the picture
-   to a horizontal line before going dark, hence the scaleY squish
-   rather than a plain fade. */
+   not affecting the computer behind it. Resting "off" state only; the
+   actual transition is the multi-stage crtPowerOff/crtPowerOn keyframe
+   animations below, driven by the .powering-off/.powering-on classes
+   terminal.js adds for the duration of the animation. */
 .crt.screen-off{
   background-color:#000;
 }
 .crt.screen-off::before,
-.crt.screen-off::after{
+.crt.screen-off::after,
+.crt.screen-off .crt-flicker,
+.crt.screen-off .crt-glass{
   opacity:0;
 }
 
 #terminal{
   width:100%;
   height:100%;
-  transition:transform 0.22s ease-in;
   transform-origin:50% 50%;
+  filter:var(--phosphor-glow);
 }
 .crt.screen-off #terminal{
-  transform:scaleY(0);
+  transform:scaleY(.012) scaleX(.001);
+  opacity:0;
 }
 #terminal .xterm{
   height:100%;
@@ -115,6 +129,147 @@ body.keyboard-open {
 @keyframes freq{
   0% {background-position:0px 0px}
   100% {background-position:0px 10px}
+}
+
+/* Old phosphor brightness dips - irregular, unevenly-spaced blips read as
+   "aging monitor" much better than a smooth sine wave would. */
+.crt-flicker{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  background:#000;
+  opacity:0;
+  animation:flicker 6.3s infinite linear;
+}
+@keyframes flicker{
+  0%,3%,5%,16%,18%,37%,39.5%,42%,61%,64%,80%,84%,100%{opacity:0}
+  4%{opacity:.07}
+  17%{opacity:.03}
+  38%{opacity:.09}
+  40.5%{opacity:.025}
+  62.5%{opacity:.05}
+  82%{opacity:.03}
+}
+
+/* Static diagonal sheen suggesting light glancing off curved glass -
+   doesn't animate, just sits there the way a real reflection would. */
+.crt-glass{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  background:linear-gradient(115deg, rgba(255,255,255,.10) 0%, rgba(255,255,255,.03) 16%, transparent 30%, transparent 100%);
+  mix-blend-mode:screen;
+}
+
+/* Occasional vertical-hold hiccup: a bright band rolls down the tube while
+   the picture jitters, then settles. Triggered rarely and irregularly by
+   terminal.js (not a fixed loop) so it reads as an analog fault, not a
+   scripted effect. */
+.crt-glitch{
+  position:absolute;
+  left:0;
+  right:0;
+  top:-20%;
+  height:16%;
+  pointer-events:none;
+  background:linear-gradient(to bottom, transparent, rgba(255,255,255,.1) 45%, transparent 90%);
+  opacity:0;
+  mix-blend-mode:overlay;
+}
+.crt-glitch.active{
+  opacity:1;
+  animation:crtRoll 900ms linear;
+}
+@keyframes crtRoll{
+  0%{top:-20%}
+  100%{top:120%}
+}
+#terminal.glitching{
+  animation:crtJitter 900ms linear;
+}
+@keyframes crtJitter{
+  0%,45%,100%{transform:translateY(0)}
+  10%{transform:translateY(-2px)}
+  20%{transform:translateY(1px)}
+  30%{transform:translateY(-1px)}
+}
+
+/* --- Power on/off: a real CRT doesn't fade, its beam collapses to a
+   bright horizontal line, then a dot, before the tube goes dark (and the
+   reverse - a dot expanding with a brief magnetic "degauss" wobble - when
+   powering back on). Both keyframe sets keep --phosphor-glow chained onto
+   every filter stop so the bloom doesn't flatten out mid-animation. */
+.crt.powering-off,
+.crt.powering-on{
+  animation-duration:620ms;
+  animation-timing-function:ease-out;
+  animation-fill-mode:forwards;
+}
+.crt.powering-off{ animation-name:crtPowerOffGlow; }
+.crt.powering-on{ animation-name:crtPowerOnGlow; }
+.crt.powering-off::before,
+.crt.powering-on::before,
+.crt.powering-off::after,
+.crt.powering-on::after{
+  animation-duration:620ms;
+  animation-fill-mode:forwards;
+  animation-timing-function:ease-out;
+}
+.crt.powering-off::before,
+.crt.powering-off::after{ animation-name:crtOverlayFadeOut; }
+.crt.powering-on::before,
+.crt.powering-on::after{ animation-name:crtOverlayFadeIn; }
+.crt.powering-off .crt-flicker,
+.crt.powering-on .crt-flicker{
+  opacity:0;
+  animation-play-state:paused;
+}
+.crt.powering-off #terminal{
+  animation:crtPowerOff 620ms cubic-bezier(.4,0,.7,1) forwards;
+}
+.crt.powering-on #terminal{
+  animation:crtPowerOn 620ms cubic-bezier(.2,.6,.3,1) forwards;
+}
+
+@keyframes crtOverlayFadeOut{
+  0%{opacity:1}
+  60%{opacity:.5}
+  100%{opacity:0}
+}
+@keyframes crtOverlayFadeIn{
+  0%{opacity:0}
+  40%{opacity:.5}
+  100%{opacity:1}
+}
+
+@keyframes crtPowerOff{
+  0%   {transform:scaleY(1) scaleX(1);       filter:brightness(1) var(--phosphor-glow);   opacity:1}
+  25%  {transform:scaleY(1) scaleX(1.03);    filter:brightness(2.4) var(--phosphor-glow); opacity:1}
+  55%  {transform:scaleY(.012) scaleX(1.12); filter:brightness(3) var(--phosphor-glow);   opacity:1}
+  82%  {transform:scaleY(.012) scaleX(.03);  filter:brightness(3) var(--phosphor-glow);   opacity:1}
+  100% {transform:scaleY(.012) scaleX(.001); filter:brightness(0) var(--phosphor-glow);   opacity:0}
+}
+@keyframes crtPowerOn{
+  0%   {transform:scaleY(.012) scaleX(.001);                  filter:brightness(0) var(--phosphor-glow);   opacity:0}
+  12%  {transform:scaleY(.012) scaleX(.04);                   filter:brightness(3) var(--phosphor-glow);   opacity:1}
+  40%  {transform:scaleY(.012) scaleX(1.1);                   filter:brightness(2.6) var(--phosphor-glow); opacity:1}
+  55%  {transform:scaleY(1.04) scaleX(1.02) skewX(1.2deg);    filter:brightness(1.9) var(--phosphor-glow); opacity:1}
+  65%  {transform:scaleY(.98) scaleX(.99) skewX(-.8deg);      filter:brightness(1.3) var(--phosphor-glow); opacity:1}
+  75%  {transform:scaleY(1.01) scaleX(1) skewX(.4deg);        filter:brightness(1.1) var(--phosphor-glow); opacity:1}
+  85%  {transform:scaleY(.995) skewX(-.15deg);                filter:brightness(1.02) var(--phosphor-glow);opacity:1}
+  100% {transform:scaleY(1) scaleX(1) skewX(0deg);            filter:brightness(1) var(--phosphor-glow);   opacity:1}
+}
+@keyframes crtPowerOffGlow{
+  0%   {background-color:#001000}
+  20%  {background-color:#daffda}
+  55%  {background-color:#001a00}
+  100% {background-color:#000}
+}
+@keyframes crtPowerOnGlow{
+  0%   {background-color:#000}
+  15%  {background-color:#eafff0}
+  45%  {background-color:#003300}
+  100% {background-color:#001000}
 }
 
 .blink {
