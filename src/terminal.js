@@ -426,7 +426,7 @@ var FS = {
   "/var": ["www"],
   "/var/www": ["dubsector.dev"],
   "/var/www/dubsector.dev": ["projects", "github"],
-  "/var/www/dubsector.dev/projects": [],
+  "/var/www/dubsector.dev/projects": ["https://dubsector.github.io/mcmmo-builds"],
   "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
 };
 
@@ -434,6 +434,7 @@ var FS = {
 // FS above) that open a new tab instead of cd-ing when clicked. The entry
 // name itself IS the target URL, not a separate label pointing at one.
 var FILE_LINKS = {
+  "/var/www/dubsector.dev/projects": ["https://dubsector.github.io/mcmmo-builds"],
   "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
 };
 
