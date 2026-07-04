@@ -8,6 +8,7 @@ mkdirSync("dist");
 
 cpSync("src/index.html", "dist/index.html");
 cpSync("src/style.css", "dist/style.css");
+cpSync("src/favicon.svg", "dist/favicon.svg");
 
 const options = {
   entryPoints: ["src/terminal.js"],
