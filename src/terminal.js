@@ -376,12 +376,17 @@ function navigateTo(name, origin) {
 // cd-ing, since it isn't a real directory. atCwd is the directory this
 // listing was printed from, stored as each entry's origin so navigateTo
 // can later tell a live "cd <name>" apart from a stale, elsewhere-printed
-// one (see navigateTo/computeHops for why that distinction matters).
-function registerDirLinks(list, entries, linkNames, atCwd) {
-  var line = term.buffer.active.baseY + term.buffer.active.cursorY + 1;
+// one (see navigateTo/computeHops for why that distinction matters). oneLine
+// mirrors the same flag the `ls` handler used to decide layout - when false,
+// each name landed on its own row instead of sharing one, so line has to
+// advance per entry instead of column.
+function registerDirLinks(list, entries, linkNames, atCwd, oneLine) {
+  var lastLine = term.buffer.active.baseY + term.buffer.active.cursorY + 1;
+  var startLine = oneLine ? lastLine : lastLine - (list.length - 1);
   var col = 1;
   for (var i = 0; i < list.length; i++) {
     var name = list[i];
+    var line = oneLine ? startLine : startLine + i;
     if (entries.indexOf(name) !== -1) {
       var isLink = linkNames && linkNames.indexOf(name) !== -1;
       dirLinks.push({
@@ -393,7 +398,7 @@ function registerDirLinks(list, entries, linkNames, atCwd) {
         origin: isLink ? undefined : atCwd,
       });
     }
-    col += name.length + 2;
+    col = oneLine ? col + name.length + 2 : 1;
   }
 }
 
@@ -425,17 +430,25 @@ var FS = {
   "/": ["var"],
   "/var": ["www"],
   "/var/www": ["dubsector.dev"],
-  "/var/www/dubsector.dev": ["projects", "github"],
-  "/var/www/dubsector.dev/projects": ["https://dubsector.github.io/mcmmo-builds"],
+  "/var/www/dubsector.dev": ["projects", "github", "caffeine"],
+  "/var/www/dubsector.dev/projects": [
+    "https://dubsector.github.io/mcmmo-builds",
+    "https://dubsector.github.io/video-shrinker",
+  ],
   "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
+  "/var/www/dubsector.dev/caffeine": ["https://buymeacoffee.com/dubsector"],
 };
 
 // Files that are really external links: cwd -> array of entry names (from
 // FS above) that open a new tab instead of cd-ing when clicked. The entry
 // name itself IS the target URL, not a separate label pointing at one.
 var FILE_LINKS = {
-  "/var/www/dubsector.dev/projects": ["https://dubsector.github.io/mcmmo-builds"],
+  "/var/www/dubsector.dev/projects": [
+    "https://dubsector.github.io/mcmmo-builds",
+    "https://dubsector.github.io/video-shrinker",
+  ],
   "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
+  "/var/www/dubsector.dev/caffeine": ["https://buymeacoffee.com/dubsector"],
 };
 
 // True while the fake `cmatrix` is running full-screen. While active, onData
@@ -595,10 +608,21 @@ function runCommand(line) {
     // actually printed from, not wherever cwd happens to point by the time
     // the callback runs.
     var atCwd = cwd;
-    var entries = (FS[atCwd] || []).slice();
+    // Sorted rather than trusting FS's own array order - real `ls` (no -f)
+    // always lists alphabetically regardless of a directory's on-disk
+    // order, and FS's arrays are just written in whatever order read
+    // naturally when a directory was added.
+    var entries = (FS[atCwd] || []).slice().sort();
     var linkNames = FILE_LINKS[atCwd] || [];
     var list = showAll ? [".", ".."].concat(entries) : entries;
     if (list.length) {
+      // Real `ls` never splits a single filename across two rows - it lays
+      // entries out in columns sized to the terminal, falling back to one
+      // name per line once nothing fits side by side. There are never more
+      // than a handful of entries in any directory here, so that full
+      // fallback (rather than a real multi-column grid) is close enough:
+      // one shared row if it fits, else one entry per row.
+      var oneLine = list.join("  ").length <= term.cols;
       // Underline every real directory name (and file-link name) so it
       // reads as clickable even before a visitor hovers it (hover-only
       // affordance doesn't exist on touchscreens). "." and ".." stay plain -
@@ -607,9 +631,9 @@ function runCommand(line) {
         .map(function (name) {
           return entries.indexOf(name) !== -1 ? "\x1b[4m" + name + "\x1b[24m" : name;
         })
-        .join("  ");
+        .join(oneLine ? "  " : "\r\n");
       term.write("\r\n" + display, function () {
-        registerDirLinks(list, entries, linkNames, atCwd);
+        registerDirLinks(list, entries, linkNames, atCwd, oneLine);
       });
     }
     return;
