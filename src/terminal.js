@@ -434,6 +434,7 @@ var FS = {
   "/var/www/dubsector.dev/projects": [
     "https://dubsector.github.io/mcmmo-builds",
     "https://dubsector.github.io/video-shrinker",
+    "https://dubsector.github.io/mc-server-stats",
   ],
   "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
   "/var/www/dubsector.dev/caffeine": ["https://buymeacoffee.com/dubsector"],
@@ -446,6 +447,7 @@ var FILE_LINKS = {
   "/var/www/dubsector.dev/projects": [
     "https://dubsector.github.io/mcmmo-builds",
     "https://dubsector.github.io/video-shrinker",
+    "https://dubsector.github.io/mc-server-stats",
   ],
   "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
   "/var/www/dubsector.dev/caffeine": ["https://buymeacoffee.com/dubsector"],
