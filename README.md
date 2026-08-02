@@ -58,7 +58,7 @@ single version, so branch previews (`wrangler versions upload`) inherit them and
 otherwise log preview traffic as real visits; the client checks `location.hostname`
 before loading anything, which keeps previews and `wrangler dev` on localhost silent.
 
-Tracking is cookieless (`disableCookies`) and honours Do Not Track. Beyond the pageview,
+Tracking uses Matomo's normal first-party cookies and honours Do Not Track. Beyond the pageview,
 each command a visitor types is sent as an event — category `terminal`, action `command`,
 name the command line (truncated to 100 chars). Commands run by the scripted intro are
 not tracked, only ones typed by hand.

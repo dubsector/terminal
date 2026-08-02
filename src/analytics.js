@@ -30,11 +30,6 @@ export function initAnalytics() {
       if (!config || !config.siteId) return;
 
       var q = paq();
-      // Cookieless: Matomo falls back to a short-lived config-based visitor
-      // id, which keeps the site out of consent-banner territory at the cost
-      // of less accurate returning-visitor counts. Drop this line (and honour
-      // DNT elsewhere) if that tradeoff ever stops being worth it.
-      q.push(["disableCookies"]);
       q.push(["setDoNotTrack", true]);
       q.push(["setTrackerUrl", TRACKER_URL]);
       q.push(["setSiteId", config.siteId]);
