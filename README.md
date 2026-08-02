@@ -25,47 +25,18 @@ Build command: `npm run build`. Deploy command: `npx wrangler deploy`.
 
 ## Analytics
 
-Traffic goes to a self-hosted [Matomo](https://matomo.org/). The tracker is proxied
-through the Worker instead of being loaded from the Matomo host directly, so the browser
-only ever talks to `dubsector.dev`:
+Cookieless [Matomo](https://matomo.org/), self-hosted. Pageviews plus a `terminal` /
+`command` event for each command a visitor types by hand. Only runs on `dubsector.dev`,
+so branch previews and local dev stay out of the stats.
 
-| Browser request | Proxied to |
-| --- | --- |
-| `/mtm/mtm.js` | `$MATOMO_ORIGIN/matomo.js` |
-| `/mtm/mtm.php` | `$MATOMO_ORIGIN/matomo.php` |
+The tracker is proxied through the Worker (`/mtm/mtm.js` and `/mtm/mtm.php`) so the
+browser only ever talks to `dubsector.dev`. Two Worker secrets drive it:
 
-That keeps the tracker off third-party blocklists and keeps the Matomo hostname out of
-the page source. The real visitor IP is forwarded as `X-Forwarded-For`, so Matomo needs
-this in its `config.ini.php` to geolocate visits correctly rather than attributing them
-all to a Cloudflare egress IP:
-
-```ini
-[General]
-proxy_client_headers[] = HTTP_X_FORWARDED_FOR
+```sh
+npx wrangler secret put MATOMO_ORIGIN   # https://analytics.example.com
+npx wrangler secret put MATOMO_SITE_ID  # site id for dubsector.dev
 ```
 
-Two Worker secrets drive it, both set with `npx wrangler secret put <NAME>` (secrets
-survive redeploys; plain vars set in the dashboard can be overwritten by `wrangler deploy`):
-
-- `MATOMO_ORIGIN` — base URL of the Matomo install, e.g. `https://analytics.example.com`
-- `MATOMO_SITE_ID` — the Matomo site id for dubsector.dev
-
-With either one unset, `/api/analytics` returns 204 and the client skips loading the
-tracker entirely.
-
-Tracking only runs on `dubsector.dev`. Secrets belong to the Worker rather than to a
-single version, so branch previews (`wrangler versions upload`) inherit them and would
-otherwise log preview traffic as real visits; the client checks `location.hostname`
-before loading anything, which keeps previews and `wrangler dev` on localhost silent.
-
-Tracking is cookieless (`disableCookies`) and honours Do Not Track. No cookies plus
-anonymized IPs on a self-hosted install is what keeps the site out of consent-banner
-territory, so the Matomo side needs the matching privacy settings under Administration →
-Privacy → Anonymize data: anonymize visitor IPs by at least 2 bytes, and use the
-anonymized IP when enriching visits. The tradeoff is that returning visitors stop being
-identifiable past Matomo's ~24h fallback visitor id, which matters little on a
-single-page site with no accounts. Turning cookies back on means adding a consent banner.
-
-Beyond the pageview, each command a visitor types is sent as an event — category
-`terminal`, action `command`, name the command line (truncated to 100 chars). Commands
-run by the scripted intro are not tracked, only ones typed by hand.
+With either unset, `/api/analytics` returns 204 and the client never loads the tracker.
+Matomo needs `proxy_client_headers[] = HTTP_X_FORWARDED_FOR` under `[General]` in
+`config.ini.php`, otherwise every visit geolocates to a Cloudflare IP.
