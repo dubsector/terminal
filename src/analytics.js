@@ -54,13 +54,36 @@ export function initAnalytics() {
     });
 }
 
+function trackEvent(action, name) {
+  if (!enabled) return;
+  var trimmed = String(name).trim();
+  if (!trimmed) return;
+  paq().push([
+    "trackEvent",
+    "terminal",
+    action,
+    trimmed.length > 100 ? trimmed.slice(0, 100) : trimmed,
+  ]);
+}
+
 // Only the commands a visitor actually types get here - the scripted intro
 // calls runCommand() directly, and counting those would drown out the real
 // signal of what people explore on their own.
 export function trackCommand(line) {
-  if (!enabled) return;
-  var trimmed = String(line).trim();
-  if (!trimmed) return;
-  var name = trimmed.length > 100 ? trimmed.slice(0, 100) : trimmed;
-  paq().push(["trackEvent", "terminal", "command", name]);
+  trackEvent("command", line);
+}
+
+// Clicking a directory link runs the same cd/ls a visitor could have typed,
+// but it's a separate action so the stats show which way people actually
+// explore: whether the links are getting discovered at all, or everyone is
+// typing. The clicked name, not the replayed hops, is what's recorded.
+export function trackClick(name) {
+  trackEvent("click", name);
+}
+
+// Matomo's enableLinkTracking only sees real DOM anchors, and these "links"
+// are terminal cells painted by xterm's link provider, so outbound clicks
+// have to be reported by hand or they don't show up anywhere.
+export function trackLink(url) {
+  trackEvent("outlink", url);
 }
