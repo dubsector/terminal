@@ -1,6 +1,9 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { initAnalytics, trackCommand } from "./analytics.js";
+
+initAnalytics();
 
 var HOSTNAME = "websvr";
 var USER = "root";
@@ -1031,6 +1034,7 @@ term.onData(function (data) {
     var line = inputBuffer;
     inputBuffer = "";
     cursorPos = 0;
+    trackCommand(line);
     var result = runCommand(line);
     if (result !== "cmatrix" && result !== "logout") writePrompt();
     return;

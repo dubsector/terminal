@@ -22,3 +22,38 @@ npm run build  # production build to dist/
 
 Deploys to Cloudflare Workers (static assets) via Cloudflare's git integration, watching `main`.
 Build command: `npm run build`. Deploy command: `npx wrangler deploy`.
+
+## Analytics
+
+Traffic goes to a self-hosted [Matomo](https://matomo.org/). The tracker is proxied
+through the Worker instead of being loaded from the Matomo host directly, so the browser
+only ever talks to `dubsector.dev`:
+
+| Browser request | Proxied to |
+| --- | --- |
+| `/mtm/mtm.js` | `$MATOMO_ORIGIN/matomo.js` |
+| `/mtm/mtm.php` | `$MATOMO_ORIGIN/matomo.php` |
+
+That keeps the tracker off third-party blocklists and keeps the Matomo hostname out of
+the page source. The real visitor IP is forwarded as `X-Forwarded-For`, so Matomo needs
+this in its `config.ini.php` to geolocate visits correctly rather than attributing them
+all to a Cloudflare egress IP:
+
+```ini
+[General]
+proxy_client_headers[] = HTTP_X_FORWARDED_FOR
+```
+
+Two Worker secrets drive it, both set with `npx wrangler secret put <NAME>` (secrets
+survive redeploys; plain vars set in the dashboard can be overwritten by `wrangler deploy`):
+
+- `MATOMO_ORIGIN` — base URL of the Matomo install, e.g. `https://analytics.example.com`
+- `MATOMO_SITE_ID` — the Matomo site id for dubsector.dev
+
+With either one unset, `/api/analytics` returns 204 and the client skips loading the
+tracker entirely, which is what happens on local builds.
+
+Tracking is cookieless (`disableCookies`) and honours Do Not Track. Beyond the pageview,
+each command a visitor types is sent as an event — category `terminal`, action `command`,
+name the command line (truncated to 100 chars). Commands run by the scripted intro are
+not tracked, only ones typed by hand.
