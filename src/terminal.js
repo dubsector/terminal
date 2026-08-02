@@ -1,7 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { initAnalytics, trackCommand } from "./analytics.js";
+import { initAnalytics, trackCommand, trackClick, trackLink } from "./analytics.js";
 
 initAnalytics();
 
@@ -249,8 +249,10 @@ term.registerLinkProvider({
           },
           activate: function () {
             if (l.url) {
+              trackLink(l.url);
               window.open(l.url, "_blank", "noopener,noreferrer");
             } else if (!navigating) {
+              trackClick(l.name);
               navigateTo(l.name, l.origin);
             }
           },
