@@ -38,5 +38,8 @@ npx wrangler secret put MATOMO_SITE_ID  # site id for dubsector.dev
 ```
 
 With either unset, `/api/analytics` returns 204 and the client never loads the tracker.
-Matomo needs `proxy_client_headers[] = HTTP_X_FORWARDED_FOR` under `[General]` in
-`config.ini.php`, otherwise every visit geolocates to a Cloudflare IP.
+The visitor IP is forwarded as `X-Visitor-IP`, so Matomo needs
+`proxy_client_headers[] = "HTTP_X_VISITOR_IP"` under `[General]` in `config.ini.php`,
+otherwise every visit is logged as whatever proxy sits in front of it. It can't ride in
+`X-Forwarded-For`: the subrequest crosses Cloudflare's edge on its way to Matomo, and the
+edge rewrites that header to the connecting IP of its own leg.
