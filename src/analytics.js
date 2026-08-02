@@ -5,6 +5,12 @@
 var SCRIPT_URL = "/mtm/mtm.js";
 var TRACKER_URL = "/mtm/mtm.php";
 
+// Secrets live on the Worker rather than on a single version, so preview
+// deploys (`wrangler versions upload` runs on every branch) inherit them and
+// would otherwise log branch traffic as real dubsector.dev visits. Only the
+// production hostname tracks; previews and localhost stay silent.
+var PRODUCTION_HOST = "dubsector.dev";
+
 var enabled = false;
 
 function paq() {
@@ -13,6 +19,8 @@ function paq() {
 }
 
 export function initAnalytics() {
+  if (window.location.hostname !== PRODUCTION_HOST) return Promise.resolve();
+
   return fetch("/api/analytics")
     .then(function (res) {
       if (res.status !== 200) return null;

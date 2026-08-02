@@ -51,7 +51,12 @@ survive redeploys; plain vars set in the dashboard can be overwritten by `wrangl
 - `MATOMO_SITE_ID` — the Matomo site id for dubsector.dev
 
 With either one unset, `/api/analytics` returns 204 and the client skips loading the
-tracker entirely, which is what happens on local builds.
+tracker entirely.
+
+Tracking only runs on `dubsector.dev`. Secrets belong to the Worker rather than to a
+single version, so branch previews (`wrangler versions upload`) inherit them and would
+otherwise log preview traffic as real visits; the client checks `location.hostname`
+before loading anything, which keeps previews and `wrangler dev` on localhost silent.
 
 Tracking is cookieless (`disableCookies`) and honours Do Not Track. Beyond the pageview,
 each command a visitor types is sent as an event — category `terminal`, action `command`,
