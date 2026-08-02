@@ -30,6 +30,12 @@ export function initAnalytics() {
       if (!config || !config.siteId) return;
 
       var q = paq();
+      // Cookieless keeps the site out of consent-banner territory: with no
+      // cookies, anonymized IPs and a self-hosted install, Matomo qualifies
+      // for the CNIL-style consent exemption. The cost is that returning
+      // visitors stop being identifiable past the ~24h config-id window,
+      // which is close to meaningless on a single-page site with no accounts.
+      q.push(["disableCookies"]);
       q.push(["setDoNotTrack", true]);
       q.push(["setTrackerUrl", TRACKER_URL]);
       q.push(["setSiteId", config.siteId]);

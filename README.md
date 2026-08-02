@@ -58,7 +58,14 @@ single version, so branch previews (`wrangler versions upload`) inherit them and
 otherwise log preview traffic as real visits; the client checks `location.hostname`
 before loading anything, which keeps previews and `wrangler dev` on localhost silent.
 
-Tracking uses Matomo's normal first-party cookies and honours Do Not Track. Beyond the pageview,
-each command a visitor types is sent as an event — category `terminal`, action `command`,
-name the command line (truncated to 100 chars). Commands run by the scripted intro are
-not tracked, only ones typed by hand.
+Tracking is cookieless (`disableCookies`) and honours Do Not Track. No cookies plus
+anonymized IPs on a self-hosted install is what keeps the site out of consent-banner
+territory, so the Matomo side needs the matching privacy settings under Administration →
+Privacy → Anonymize data: anonymize visitor IPs by at least 2 bytes, and use the
+anonymized IP when enriching visits. The tradeoff is that returning visitors stop being
+identifiable past Matomo's ~24h fallback visitor id, which matters little on a
+single-page site with no accounts. Turning cookies back on means adding a consent banner.
+
+Beyond the pageview, each command a visitor types is sent as an event — category
+`terminal`, action `command`, name the command line (truncated to 100 chars). Commands
+run by the scripted intro are not tracked, only ones typed by hand.
