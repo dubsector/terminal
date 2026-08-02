@@ -2,7 +2,7 @@
 // Matomo host: the browser only ever talks to dubsector.dev, so the tracker
 // isn't a third-party request (no adblock/tracker-list hit), the self-hosted
 // Matomo hostname stays private, and the visitor's real IP still reaches
-// Matomo via X-Forwarded-For.
+// Matomo via X-Visitor-IP.
 const MATOMO_SCRIPT_PATH = "/mtm/mtm.js";
 const MATOMO_TRACK_PATH = "/mtm/mtm.php";
 
@@ -19,11 +19,15 @@ async function proxyToMatomo(request, env, upstreamPath) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
-  // Matomo needs proxy_client_headers[] = HTTP_X_FORWARDED_FOR in its
-  // config.ini.php to trust this, otherwise every visit is geolocated to
-  // whatever Cloudflare egress IP happens to make the request.
+  // The visitor IP rides in a custom header rather than X-Forwarded-For.
+  // This subrequest goes back out through Cloudflare's edge to reach the
+  // tunnel in front of Matomo, and the edge rewrites X-Forwarded-For to
+  // the connecting IP of that leg - so anything we put there is gone by
+  // the time Matomo reads it, and every visit gets logged as the tunnel.
+  // A header Cloudflare doesn't manage survives the trip intact. Matomo
+  // reads it via proxy_client_headers[] = HTTP_X_VISITOR_IP.
   const ip = request.headers.get("CF-Connecting-IP");
-  if (ip) headers.set("X-Forwarded-For", ip);
+  if (ip) headers.set("X-Visitor-IP", ip);
 
   const response = await fetch(upstream, {
     method: request.method,
