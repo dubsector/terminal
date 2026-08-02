@@ -5,6 +5,12 @@
 var SCRIPT_URL = "/mtm/mtm.js";
 var TRACKER_URL = "/mtm/mtm.php";
 
+// Secrets live on the Worker rather than on a single version, so preview
+// deploys (`wrangler versions upload` runs on every branch) inherit them and
+// would otherwise log branch traffic as real dubsector.dev visits. Only the
+// production hostname tracks; previews and localhost stay silent.
+var PRODUCTION_HOST = "dubsector.dev";
+
 var enabled = false;
 
 function paq() {
@@ -13,6 +19,8 @@ function paq() {
 }
 
 export function initAnalytics() {
+  if (window.location.hostname !== PRODUCTION_HOST) return Promise.resolve();
+
   return fetch("/api/analytics")
     .then(function (res) {
       if (res.status !== 200) return null;
@@ -22,10 +30,11 @@ export function initAnalytics() {
       if (!config || !config.siteId) return;
 
       var q = paq();
-      // Cookieless: Matomo falls back to a short-lived config-based visitor
-      // id, which keeps the site out of consent-banner territory at the cost
-      // of less accurate returning-visitor counts. Drop this line (and honour
-      // DNT elsewhere) if that tradeoff ever stops being worth it.
+      // Cookieless keeps the site out of consent-banner territory: with no
+      // cookies, anonymized IPs and a self-hosted install, Matomo qualifies
+      // for the CNIL-style consent exemption. The cost is that returning
+      // visitors stop being identifiable past the ~24h config-id window,
+      // which is close to meaningless on a single-page site with no accounts.
       q.push(["disableCookies"]);
       q.push(["setDoNotTrack", true]);
       q.push(["setTrackerUrl", TRACKER_URL]);
