@@ -199,6 +199,7 @@ function binderLabel(binder, maps, range, makeMaterial, maxAniso) {
 
   var room = cleanRegion(maps.room, lo, hi);
   var screen = cleanRegion(maps.screen, lo, hi);
+  var lamp = cleanRegion(maps.lamp, lo, hi);
 
   // Two triangles over the same corners, facing out of the spine. Seen from
   // the desk the label reads left to right along local +z, bottom to top
@@ -225,13 +226,13 @@ function binderLabel(binder, maps, range, makeMaterial, maxAniso) {
   g.computeVertexNormals();
 
   var label = drawLabel(maxAniso);
-  var mat = makeMaterial({ room: room.texture, screen: screen.texture }, label);
+  var mat = makeMaterial({ room: room.texture, lamp: lamp.texture, screen: screen.texture }, label);
   var mesh = new Mesh(g, mat);
   mesh.name = "BinderLabelPrint";
   binder.add(mesh);
   return {
     mesh: mesh,
-    textures: [label, room.texture, screen.texture],
+    textures: [label, room.texture, lamp.texture, screen.texture],
     material: mat,
   };
 }
@@ -243,6 +244,8 @@ function binderLabel(binder, maps, range, makeMaterial, maxAniso) {
 var STEAM_BASE = 0.082;
 var STEAM_HEIGHT = 0.17;
 var STEAM_WIDTH = 0.11;
+// Share of the steam's brightness left with the desk lamp off.
+var STEAM_LAMP_OFF = 0.3;
 
 var STEAM_VERT = [
   "varying vec2 vUv;",
@@ -322,10 +325,18 @@ function mugSteam(mug, reducedMotion) {
   });
 
   var camLocal = new Vector3();
+  var lit = mats[0].uniforms.uColor.value.clone();
   return {
     meshes: group,
     geometry: geo,
     materials: mats,
+    // Most of what lights the steam is the lamp; with it off only a faint
+    // grey is left against the dark room.
+    setLamp: function (level) {
+      mats.forEach(function (mat) {
+        mat.uniforms.uColor.value.copy(lit).multiplyScalar(STEAM_LAMP_OFF + (1 - STEAM_LAMP_OFF) * level);
+      });
+    },
     // Turns the sheets to the camera about the mug's vertical, and moves the
     // wisps along. Returns true while it wants more frames.
     step: function (dt, camera) {
@@ -384,6 +395,9 @@ export function dressProps(model, maxAniso) {
     textures: textures,
     step: function (dt, camera) {
       return steam ? steam.step(dt, camera) : false;
+    },
+    setLamp: function (level) {
+      if (steam) steam.setLamp(level);
     },
     dispose: function () {
       textures.forEach(function (t) {

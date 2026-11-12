@@ -51,6 +51,11 @@ WIN_X0, WIN_X1, WIN_Z0, WIN_Z1 = -1.80, -0.80, 0.50, 1.62
 LAMP_POS = Vector((0.37, 0.27, 0.0))
 LAMP_HEAD_XY = Vector((0.305, 0.075))
 LAMP_WRIST_Z = 0.36
+# inline rocker switch on the lamp cord, lying on the desk in front of and
+# to the right of the base (world x, y of its two ends, where the cord goes in)
+CORD_SWITCH_A = (0.335, 0.097)
+CORD_SWITCH_B = (0.397, 0.080)
+CORD_SWITCH_TRAVEL = 0.0015         # m, rocker dips straight down when pressed
 # where the open end of the shade points, in world space
 SHADE_AIM = Vector((0.06, -0.20, -1.0)).normalized()
 _d = LAMP_HEAD_XY - LAMP_POS.xy
@@ -876,9 +881,14 @@ def _lamp(col):
     yg = Y_WALL - 0.009            # in the 20 mm gap behind the desk
     ys = Y_WALL - 0.016 - rc - 0.002   # just clear of the skirting face
     px, pz = 0.958, Z_FLOOR + 0.29
-    c0 = LAMP_MATRIX @ Vector((-0.040, 0.0, 0.0045))
-    path = catmull([c0, c0 + Vector((0.006, 0.022, zd - 0.0045)), (0.415, 0.365, zd), (0.455, 0.400, zd),
-                    (0.500, 0.428, zd), (0.535, 0.4445, zd), (0.547, 0.4545, zd), (0.556, yg, -0.007),
+    # Out of the front-right of the base, through the inline switch, round
+    # the right of the base and back to the rear edge of the desk.
+    sa, sb = Vector((*CORD_SWITCH_A, zd)), Vector((*CORD_SWITCH_B, zd))
+    sd = (sb - sa).normalized()
+    c0 = Vector((0.334, 0.153, 0.0045))
+    path = catmull([c0, (0.320, 0.124, zd), sa - sd * 0.012, sa, sb, sb + sd * 0.016,
+                    (0.440, 0.082, zd), (0.470, 0.100, zd), (0.488, 0.150, zd), (0.500, 0.220, zd), (0.508, 0.300, zd),
+                    (0.522, 0.390, zd), (0.535, 0.4445, zd), (0.547, 0.4545, zd), (0.556, yg, -0.007),
                     (0.559, yg, -0.035), (0.560, yg, -0.15), (0.560, yg, -0.35), (0.560, yg, -0.52),
                     (0.561, yg - 0.003, -0.585), (0.563, ys, -0.625), (0.565, ys, -0.68),
                     (0.572, ys, zf + 0.012), (0.592, ys, zf), (0.66, ys, zf), (0.78, ys - 0.003, zf),
@@ -887,8 +897,20 @@ def _lamp(col):
     m = Mesh().add(p_tube(path, rc, 6), cord_mat)
     m.add(p_box((0.086, 0.008, 0.086), 0.002, 1), plug_mat, T(px, Y_WALL - 0.004, pz + 0.010))
     m.add(p_box((0.044, 0.032, 0.048), 0.005, 2), plug_mat, T(px, Y_WALL - 0.008 - 0.016, pz + 0.004))
+    # the inline switch body: a rounded black box the cord runs through
+    mid = (sa + sb) / 2
+    ang = math.degrees(math.atan2(sd.y, sd.x))
+    m.add(p_box((0.062, 0.026, 0.017), 0.0045, 3), knob, T(mid.x, mid.y, 0.0085) @ R(ang, "Z"))
     cord = m.finish("Lamp_Cord", col)
-    return [base, arm, shade, cord], bulb
+
+    # its rocker, a separate object so the page can press it; tipped toward
+    # the cord's far end, the way a rocker sits when it is on
+    m = Mesh()
+    m.add(p_box((0.024, 0.016, 0.006), 0.002, 2), plug_mat,
+          T(mid.x, mid.y, 0.0172) @ R(ang, "Z") @ R(7, "Y"))
+    switch = m.finish("Lamp_Switch", col)
+    switch["travel"] = CORD_SWITCH_TRAVEL
+    return [base, switch, arm, shade, cord], bulb
 
 
 # ---------------------------------------------------------------- props
@@ -901,11 +923,11 @@ def _mug(col):
         prof.append((0.039 + 0.002 * math.cos(a), 0.0925 + 0.0025 * math.sin(a) + 0.0 * k))
     prof += [(0.037, 0.089), (0.037, 0.068), (0.0, 0.068)]
     seg_mats = [0] * (len(prof) - 2) + [1]
-    m = Mesh().add(p_lathe(prof, 36, seg_mats), [ceramic, coffee])
+    m = Mesh().add(p_lathe(prof, 72, seg_mats), [ceramic, coffee])
     path = catmull([(0.0385, 0, 0.076), (0.058, 0, 0.079), (0.070, 0, 0.066), (0.071, 0, 0.046),
                     (0.062, 0, 0.029), (0.0385, 0, 0.024)], 5)
     # strap handle: 8 mm thick, 16 mm wide
-    handle = p_tube(path, 0.004, 10)
+    handle = p_tube(path, 0.004, 16)
     bmesh.ops.scale(handle, vec=(1.0, 2.0, 1.0), verts=handle.verts)
     m.add(handle, ceramic)
     return m.finish("Mug", col, loc=(MUG_POS[0], MUG_POS[1], 0), rot_z=math.radians(-38))

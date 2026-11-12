@@ -4,11 +4,14 @@
 
 One run regenerates everything in src/assets/:
     scene.glb              geometry only, meshopt compressed, two UV sets
-    lm_hero_room.webp      terminal + keyboard + cable, room light
+    lm_hero_room.webp      terminal + keyboard + cable, room light (window, dusk sky)
+    lm_hero_lamp.webp      same texels, light from the desk lamp only
     lm_hero_screen.webp    same texels, light from the lit picture only
     lm_env_room.webp       desk, walls, props, lamp, room light
+    lm_env_lamp.webp       same texels, light from the desk lamp only
     lm_env_screen.webp     same texels, light from the lit picture only
-    reflect.webp           what the convex glass mirrors (see README.md)
+    reflect.webp           what the convex glass mirrors (see README.md), lamp on
+    reflect_off.webp       the same with the lamp switched off
 
 Flags (all optional):
     --samples N        bake samples per texel, hero atlas (default 1024)
@@ -26,7 +29,7 @@ Flags (all optional):
 
 Stages, in order: build the three modules, place the keyboard and its cable,
 check for intersections, find the faces a viewer can ever see, lay out the
-two lightmap atlases, bake "room" and "screen" light into each, encode the
+two lightmap atlases, bake "room", "lamp" and "screen" light into each, encode the
 maps, render the reflection image, strip unseen faces and export.
 """
 import ctypes
@@ -65,6 +68,9 @@ PICTURE_RGB = (0.10, 1.0, 0.20)
 PICTURE_LEVEL = 0.25
 
 RANGE_SKIP = ("Lamp_Shade",)        # objects ignored when choosing a map's range
+# Light passes baked into every atlas.  They add up: the page draws
+# room + lamp * (lamp switch) + screen * (picture level).
+PASSES = ("room", "lamp", "screen")
 LM_NAME = "Lightmap"
 DILATE_PX = 12                      # margin grown around every island
 PACK_MARGIN_PX = 10.0               # gap the packer leaves around islands
@@ -126,8 +132,8 @@ DENSITY = (
     ("Key_", 1.25), ("LegendStrip", 1.3), ("Kbd_Feet", 0.5), ("Kbd_Cable", 0.7), ("Kbd_", 1.0),
     ("Keyboard", 1.0),
     ("Desk_Body", 0.45), ("Desk_Top", 0.5), ("Wall_Left", 0.06), ("Wall_Right", 0.06), ("Floor", 0.06),
-    ("Ceiling", 0.06), ("Skirting", 0.15), ("Lamp_Cord", 0.5), ("Lamp_", 1.0),
-    ("Wall_Note", 1.7), ("Mug", 1.3), ("Floppy", 1.3), ("Notepad", 1.3), ("Pen", 1.3), ("Binder", 1.3),
+    ("Ceiling", 0.06), ("Skirting", 0.15), ("Lamp_Switch", 3.0), ("Lamp_Cord", 0.5), ("Lamp_", 1.0),
+    ("Wall_Note", 1.7), ("Mug", 2.0), ("Floppy", 1.3), ("Notepad", 1.3), ("Pen", 1.3), ("Binder", 1.3),
 )
 
 # Big flat faces get a continuous, piecewise-linear lightmap mapping instead
@@ -381,14 +387,15 @@ def build_backing(col):
     return obj
 
 
-def split_glow(obj, col, room, rng, size):
+def split_glow(obj, col, room, rng, size, also=None):
     """Move the faces of `obj` whose room-light value is above the map's range
     (they would clip to a flat grey) into a new object drawn unlit.  Returns
-    (new object, mean linear radiance of those faces) or (None, None)."""
+    (new object, mean linear radiance of those faces, mean of `also` - a
+    second map - over the same faces) or (None, None, None)."""
     me = obj.data
     uv = get_uv(me)
     hot = np.zeros(len(me.polygons), bool)
-    vals, areas = [], []
+    vals, alsos, areas = [], [], []
     for p in me.polygons:
         c = uv[p.loop_start:p.loop_start + p.loop_total].mean(axis=0)
         x = min(max(int(c[0] * size), 0), size - 1)
@@ -397,9 +404,10 @@ def split_glow(obj, col, room, rng, size):
         if float(v.max()) > rng:
             hot[p.index] = True
             vals.append(v)
+            alsos.append(also[y, x] if also is not None else v)
             areas.append(p.area)
     if not hot.any():
-        return None, None
+        return None, None, None
     glow = obj.copy()
     glow.data = me.copy()
     glow.name = glow.data.name = obj.name + "Glow"
@@ -413,7 +421,7 @@ def split_glow(obj, col, room, rng, size):
         bm.free()
     set_uv(glow.data, np.zeros((len(glow.data.loops), 2)))
     w = np.array(areas)[:, None]
-    return glow, (np.array(vals) * w).sum(axis=0) / w.sum()
+    return glow, (np.array(vals) * w).sum(axis=0) / w.sum(), (np.array(alsos) * w).sum(axis=0) / w.sum()
 
 
 # =========================================================================
@@ -1389,9 +1397,10 @@ def reflection_debug(b, path):
     save_bytes(top[::-1], path, fmt="PNG")
 
 
-def look_material(name, room_path, screen_path, room_range, screen_range):
-    """Emission = decoded room map * range + decoded screen map * range *
-    picture radiance.  Back faces glow magenta so holes show."""
+def look_material(name, room_path, screen_path, room_range, screen_range, lamp_path=None, lamp_range=0.0):
+    """Emission = decoded room map * range + decoded lamp map * range (lamp
+    on) + decoded screen map * range * picture radiance.  Back faces glow
+    magenta so holes show."""
     mat = bpy.data.materials.new(name)
     nt = mat.node_tree
     nt.nodes.clear()
@@ -1419,6 +1428,22 @@ def look_material(name, room_path, screen_path, room_range, screen_range):
     add.operation = "ADD"
     nt.links.new(a.outputs["Vector"], add.inputs[0])
     nt.links.new(b.outputs["Vector"], add.inputs[1])
+    if lamp_path:
+        t = nt.nodes.new("ShaderNodeTexImage")
+        t.image = bpy.data.images.load(lamp_path, check_existing=True)
+        t.image.colorspace_settings.name = "sRGB"
+        t.interpolation = "Linear"
+        t.extension = "EXTEND"
+        nt.links.new(uv.outputs["UV"], t.inputs["Vector"])
+        c = nt.nodes.new("ShaderNodeVectorMath")
+        c.operation = "SCALE"
+        c.inputs["Scale"].default_value = lamp_range
+        nt.links.new(t.outputs["Color"], c.inputs[0])
+        add2 = nt.nodes.new("ShaderNodeVectorMath")
+        add2.operation = "ADD"
+        nt.links.new(add.outputs["Vector"], add2.inputs[0])
+        nt.links.new(c.outputs["Vector"], add2.inputs[1])
+        add = add2
     em = nt.nodes.new("ShaderNodeEmission")
     nt.links.new(add.outputs["Vector"], em.inputs["Color"])
     back = nt.nodes.new("ShaderNodeEmission")
@@ -1622,6 +1647,40 @@ def verify_glb(path, expect):
 # =========================================================================
 # main
 # =========================================================================
+def reflection_pass(scene, tube, glass, args, bake_dir, out_dir, led_bsdf, led_strength, tag):
+    """Render and encode the reflection image and the glass light for the
+    lights as they are now.  `tag` goes into the file names."""
+    t0 = time.time()
+    led_bsdf.inputs["Emission Strength"].default_value = 0.0
+    refl_exr = os.path.join(bake_dir, "reflect%s_raw.exr" % tag)
+    basis = render_reflection(scene, tube, glass, arg(args, "--reflect-samples", 512, int), refl_exr)
+    refl = np.nan_to_num(load_image(refl_exr)[..., :3])
+    glass_light, glass_light_dir = render_glass_light(
+        scene, tube, glass, 256, os.path.join(bake_dir, "glass_light%s.exr" % tag), refl)
+    led_bsdf.inputs["Emission Strength"].default_value = led_strength
+    log("GLASS LIGHT radiance of a white surface %s, from %s (TubeRef local)" % (
+        [round(c, 4) for c in glass_light], [round(c, 3) for c in glass_light_dir]))
+    refl = gaussian_blur(refl, 2.5)
+    save_exr(refl, os.path.join(bake_dir, "reflect%s.exr" % tag))
+    peak = refl.max(axis=2)
+    reflect_range = float("%.4g" % max(1.0, float(np.percentile(peak, 99.7)) * 1.012))
+    rb = to_bytes(refl, reflect_range)
+    refl_path = os.path.join(out_dir, "reflect%s.webp" % tag)
+    back = save_bytes(rb, refl_path)
+    reflection_debug(rb, os.path.join(bake_dir, "reflect%s_debug.png" % tag))
+    rep = {
+        "range": reflect_range, "max": float(peak.max()), "p99": float(np.percentile(peak, 99)),
+        "p99.7": float(np.percentile(peak, 99.7)), "clipped_fraction": float((peak > reflect_range).mean()),
+        "mean_linear_float": float(np.minimum(refl, reflect_range).mean()),
+        "mean_linear_webp": float((srgb_decode(back / 255.0) * reflect_range).mean()),
+        "bytes": os.path.getsize(refl_path),
+        "camera_right": [round(v, 5) for v in basis["right"]], "camera_up": [round(v, 5) for v in basis["up"]],
+        "camera_forward": [round(v, 5) for v in basis["forward"]], "camera_at": [round(v, 5) for v in basis["apex"]],
+    }
+    rep["seconds"] = round(time.time() - t0)
+    return {"range": reflect_range, "glass_light": glass_light, "glass_light_dir": glass_light_dir, "report": rep}
+
+
 def main():
     args = vc.script_args()
     samples = arg(args, "--samples", 1024, int)
@@ -1725,7 +1784,7 @@ def main():
             if o.name == "Notepad":
                 grow = grow | tiny          # the spiral wire: point samples miss its facets
             st = grow.astype(np.int8)
-        if o is button or o in led_objs or o.name.startswith("Nameplate"):
+        if o is button or o in led_objs or o.name.startswith("Nameplate") or o.name == "Lamp_Switch":
             st[:] = 1                       # small moving / recoloured parts keep every face
         if o.name in WARPS:
             spec = WARPS[o.name]
@@ -1812,7 +1871,7 @@ def main():
         if meta.get("checksum") != checksum or meta.get("size") != size:
             raise RuntimeError("--skip-bake: the lightmap layout changed since the masters were baked")
         for name in atlases:
-            for pas in ("room", "screen"):
+            for pas in PASSES:
                 raw[(name, pas)] = load_image(os.path.join(bake_dir, "raw_%s_%s.exr" % (name, pas)))
         log("reused baked masters from", bake_dir, "(%d spp)" % meta.get("samples", -1))
         report["samples"] = meta.get("samples")
@@ -1820,17 +1879,14 @@ def main():
         setup_bake_device(scene, samples)
         led_bsdf.inputs["Emission Strength"].default_value = 0.0
         light_objs = [L["window_light"], L["lamp_light"]]
-        for pas in ("room", "screen"):
-            if pas == "room":
-                scene.world = L["world"]
-                glass_picture((1, 1, 1), 0.0)
-                for o in light_objs + [panes, bulb]:
-                    o.hide_render = False
-            else:
-                scene.world = black_world()
-                glass_picture((1, 1, 1), 1.0)
-                for o in light_objs + [panes, bulb]:
-                    o.hide_render = True
+        # What each pass lights the set with. Light transport is linear in
+        # its sources, so the passes add back up to the whole room.
+        sources = {"room": [L["window_light"], panes], "lamp": [L["lamp_light"], bulb], "screen": []}
+        for pas in PASSES:
+            scene.world = L["world"] if pas == "room" else black_world()
+            glass_picture((1, 1, 1), 1.0 if pas == "screen" else 0.0)
+            for o in light_objs + [panes, bulb]:
+                o.hide_render = o not in sources[pas]
             for name, objs in atlases.items():
                 t0 = time.time()
                 img = bpy.data.images.new("bake_%s_%s" % (name, pas), size, size, alpha=True, float_buffer=True)
@@ -1854,7 +1910,8 @@ def main():
             o.hide_render = False
         led_bsdf.inputs["Emission Strength"].default_value = led_strength
         with open(meta_path, "w") as f:
-            json.dump({"checksum": checksum, "size": size, "samples": samples, "env_samples": env_samples}, f)
+            json.dump({"checksum": checksum, "size": size, "samples": samples, "env_samples": env_samples,
+                   "passes": list(PASSES)}, f)
 
     # ---------------------------------------------------------- encode
     enc = {}
@@ -1862,7 +1919,8 @@ def main():
     # A texel counts as covered only if the layout says so AND Cycles wrote
     # it in both passes (the baked image's alpha); everything else is margin.
     for name in atlases:
-        masks[name] = masks[name] & (raw[(name, "room")][..., 3] > 0) & (raw[(name, "screen")][..., 3] > 0)
+        for pas in PASSES:
+            masks[name] = masks[name] & (raw[(name, pas)][..., 3] > 0)
     probes = {"hero": {"keys": [o for o in hero if o.name.startswith("Key_")],
                        "Collar": [o for o in hero if o.name == "Collar"]},
               "env": {"Wall_Desk": [o for o in env if o.name == "Wall_Desk"],
@@ -1901,35 +1959,21 @@ def main():
     report["encode"] = {"%s_%s" % k: v for k, v in enc.items()}
 
     # ---------------------------------------------------------- reflection
-    t0 = time.time()
-    led_bsdf.inputs["Emission Strength"].default_value = 0.0
-    refl_exr = os.path.join(bake_dir, "reflect_raw.exr")
-    basis = render_reflection(scene, tube, glass, arg(args, "--reflect-samples", 512, int), refl_exr)
-    refl = np.nan_to_num(load_image(refl_exr)[..., :3])
-    glass_light, glass_light_dir = render_glass_light(
-        scene, tube, glass, 256, os.path.join(bake_dir, "glass_light.exr"), refl)
-    led_bsdf.inputs["Emission Strength"].default_value = led_strength
-    log("GLASS LIGHT radiance of a white surface %s, from %s (TubeRef local)" % (
-        [round(c, 4) for c in glass_light], [round(c, 3) for c in glass_light_dir]))
-    report["glass_light"] = {"rgb": glass_light, "direction": glass_light_dir}
-    refl = gaussian_blur(refl, 2.5)
-    save_exr(refl, os.path.join(bake_dir, "reflect.exr"))
-    peak = refl.max(axis=2)
-    reflect_range = float("%.4g" % max(1.0, float(np.percentile(peak, 99.7)) * 1.012))
-    rb = to_bytes(refl, reflect_range)
-    refl_path = os.path.join(out_dir, "reflect.webp")
-    back = save_bytes(rb, refl_path)
-    reflection_debug(rb, os.path.join(bake_dir, "reflect_debug.png"))
-    report["reflect"] = {
-        "range": reflect_range, "max": float(peak.max()), "p99": float(np.percentile(peak, 99)),
-        "p99.7": float(np.percentile(peak, 99.7)), "clipped_fraction": float((peak > reflect_range).mean()),
-        "mean_linear_float": float(np.minimum(refl, reflect_range).mean()),
-        "mean_linear_webp": float((srgb_decode(back / 255.0) * reflect_range).mean()),
-        "bytes": os.path.getsize(refl_path),
-        "camera_right": [round(v, 5) for v in basis["right"]], "camera_up": [round(v, 5) for v in basis["up"]],
-        "camera_forward": [round(v, 5) for v in basis["forward"]], "camera_at": [round(v, 5) for v in basis["apex"]],
-    }
-    log("REFLECT", report["reflect"], "(%.0f s)" % (time.time() - t0))
+    # Rendered twice, lamp off ("_off") then on (""); the page swaps between
+    # them with the lamp switch.
+    reflect_out = {}
+    for tag in ("_off", ""):
+        for o in (L["lamp_light"], bulb):
+            o.hide_render = tag != ""
+        reflect_out[tag] = reflection_pass(scene, tube, glass, args, bake_dir, out_dir, led_bsdf, led_strength, tag)
+        report["reflect" + tag] = reflect_out[tag]["report"]
+        report["glass_light" + tag] = {"rgb": reflect_out[tag]["glass_light"],
+                                       "direction": reflect_out[tag]["glass_light_dir"]}
+        log("REFLECT%s" % tag, reflect_out[tag]["report"])
+    for o in (L["lamp_light"], bulb):
+        o.hide_render = False
+    reflect_range = reflect_out[""]["range"]
+    glass_light, glass_light_dir = reflect_out[""]["glass_light"], reflect_out[""]["glass_light_dir"]
 
     # ---------------------------------------------------------- strip unseen faces
     tri_before = tri_after = 0
@@ -1966,7 +2010,9 @@ def main():
     ranges = {
         "room_range_hero": enc[("hero", "room")]["range"], "room_range_env": enc[("env", "room")]["range"],
         "screen_range_hero": enc[("hero", "screen")]["range"], "screen_range_env": enc[("env", "screen")]["range"],
-        "reflect_range": reflect_range, "tube_unit": vc.TUBE_UNIT,
+        "lamp_range_hero": enc[("hero", "lamp")]["range"], "lamp_range_env": enc[("env", "lamp")]["range"],
+        "reflect_range": reflect_range, "reflect_range_off": reflect_out["_off"]["range"],
+        "tube_unit": vc.TUBE_UNIT,
     }
     for k, v in ranges.items():
         scene[k] = v
@@ -1975,6 +2021,8 @@ def main():
     scene["reflect_fov_deg"] = 90.0
     scene["glass_light"] = [round(c, 5) for c in glass_light]
     scene["glass_light_dir"] = [round(c, 4) for c in glass_light_dir]
+    scene["glass_light_off"] = [round(c, 5) for c in reflect_out["_off"]["glass_light"]]
+    scene["glass_light_dir_off"] = [round(c, 4) for c in reflect_out["_off"]["glass_light_dir"]]
     report["ranges"] = ranges
 
     # ---------------------------------------------------------- unlit extras
@@ -1983,9 +2031,14 @@ def main():
     # glowing instead of clipping to a flat grey.
     glows = []
     for o in [x for x in env if x.name in RANGE_SKIP]:
-        glow, rad = split_glow(o, col, grown_maps[("env", "room")], enc[("env", "room")]["range"], size)
+        # The inside of the shade is lit almost wholly by the lamp and clips
+        # in the lamp map. With the lamp off it shows the room light alone.
+        whole = grown_maps[("env", "room")] + grown_maps[("env", "lamp")]
+        glow, rad, rad_off = split_glow(o, col, whole, enc[("env", "lamp")]["range"], size,
+                                        also=grown_maps[("env", "room")])
         if glow is None:
             continue
+        glow["emissive_off"] = [round(float(c), 5) for c in rad_off]
         del glow["atlas"]
         glow["role"] = "emissive"
         glow["emissive"] = [round(min(float(c), 1.0), 4) for c in rad]
@@ -2003,7 +2056,8 @@ def main():
         t0 = time.time()
         for name, objs in atlases.items():
             mat = look_material("Look_" + name, files[(name, "room")], files[(name, "screen")],
-                                enc[(name, "room")]["range"], enc[(name, "screen")]["range"])
+                                enc[(name, "room")]["range"], enc[(name, "screen")]["range"],
+                                files[(name, "lamp")], enc[(name, "lamp")]["range"])
             for o in objs:
                 set_single_material(o, mat)
         set_single_material(T["PowerLED"], flat_material("Look_PowerLED", tuple(c * 0.7 for c in vc.srgb("#58E84A"))))
@@ -2070,13 +2124,14 @@ def main():
         glass.hide_render = False
         # would the env atlas survive at half size?
         half = {}
-        for pas in ("room", "screen"):
+        for pas in PASSES:
             g = grown_maps[("env", pas)]
             g = g.reshape(size // 2, 2, size // 2, 2, 3).mean(axis=(1, 3))
             half[pas] = os.path.join(bake_dir, "lm_env_%s_half.webp" % pas)
             save_bytes(to_bytes(g, enc[("env", pas)]["range"]), half[pas])
         hm = look_material("Look_env_half", half["room"], half["screen"],
-                           enc[("env", "room")]["range"], enc[("env", "screen")]["range"])
+                           enc[("env", "room")]["range"], enc[("env", "screen")]["range"],
+                           half["lamp"], enc[("env", "lamp")]["range"])
         full = {o.name: o.data.materials[0] for o in env}
         for o in env:
             set_single_material(o, hm)
@@ -2144,7 +2199,7 @@ def main():
             export_meshopt_compression_enable=True, export_meshopt_extension="EXT_meshopt_compression")
         stats = verify_glb(glb, {o.name: o for o in keep_objs})
         names = [n["name"] for n in stats["nodes"]]
-        for must in ("TubeRef", "Cam_Seat", "Cam_Target", "PowerButton", "PowerLED", "Keyboard"):
+        for must in ("TubeRef", "Cam_Seat", "Cam_Target", "PowerButton", "PowerLED", "Keyboard", "Lamp_Switch"):
             assert must in names, must + " missing from the glb"
         assert "GlassProxy" not in names
         assert all(n["extras"].get("role") != "proxy" for n in stats["nodes"])
