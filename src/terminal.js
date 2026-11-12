@@ -40,15 +40,20 @@ var terminalEl = document.getElementById("terminal");
 // can't run, this flat terminal is what the visitor sees.
 //
 // ?gl=0 always gives the flat site and ?gl=1 always tries the scene.
-// Otherwise visitors who ask for reduced motion (the view moves with the
-// pointer) or to save data (it downloads about 1.6 MB) get the flat site.
+// Otherwise the flat site goes to phones and tablets (no mouse to hover
+// with: an 80-column tube is too small to read there, and the flat terminal
+// fits the screen), and to visitors who ask for reduced motion (the view
+// moves with the pointer) or to save data (it downloads about 1.6 MB).
 var GL_MODE = (function () {
   var q = window.location.search;
   if (/[?&]gl=0(&|$)/.test(q)) return false;
   if (/[?&]gl=1(&|$)/.test(q)) return true;
-  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function media(query) {
+    return !!(window.matchMedia && window.matchMedia(query).matches);
+  }
+  var touchOnly = media("(hover: none)") || media("(pointer: coarse)");
   var saveData = navigator.connection && navigator.connection.saveData;
-  return !reduceMotion && !saveData;
+  return !touchOnly && !media("(prefers-reduced-motion: reduce)") && !saveData;
 })();
 var GL_COLS = 80;
 var GL_ROWS = 25;
