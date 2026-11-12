@@ -81,7 +81,9 @@ var SCREEN_GLOW_LAG_S = 0.3;
 
 // The power switch latches in over about this long.
 var BUTTON_PRESS_S = 0.08;
-// Pointer in this much of the bottom of the window: look down at the keys.
+// In a tall window (where the seated view has the keys, but small), the
+// pointer in this much of the bottom of the window looks down at them. A
+// wider window shows the whole keyboard and never changes view.
 var LOOK_DOWN_ZONE = 0.18;
 
 var FACE_VERT = [
@@ -419,7 +421,7 @@ function start(crt) {
       return root.getObjectByName(name);
     }).filter(Boolean);
     if (!terminal.length) throw new Error("model has no terminal to frame");
-    rig = createRig(camera, model, terminal, [model.keyboard], 2 * FACE_HALF_H * RASTER.scaleY);
+    rig = createRig(camera, model, terminal, [model.keyboard]);
 
     keys = createKeys(
       model.keys,
@@ -810,7 +812,7 @@ function start(crt) {
       model.setButton(buttonPos);
     }
     if (keys.step(dt)) moving = true;
-    if (rig.step(dt, parallaxGoal.x, parallaxGoal.y, lookDown)) moving = true;
+    if (rig.step(dt, parallaxGoal.x, parallaxGoal.y, lookDown && rig.showsKeys())) moving = true;
     if (moving) wake(0.1);
 
     renderer.render(scene, camera);

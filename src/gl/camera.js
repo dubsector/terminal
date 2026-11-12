@@ -1,7 +1,9 @@
-// Where the viewer sits. Two viewpoints, both worked out from the model
-// rather than typed in: the seated view of the terminal, and a look down at
-// the keyboard. The camera eases between them and drifts a little with the
-// pointer, the way a head moves.
+// Where the viewer sits, worked out from the model rather than typed in: a
+// seated view with the terminal and the whole keyboard in frame, so every
+// key can be clicked without the view moving. The camera drifts a little
+// with the pointer, the way a head moves. A tall window (a phone) cannot fit
+// the keyboard at a size a finger can hit, so there a tap on the keys eases
+// to a closer look down at them.
 import { Vector3 } from "three";
 
 // Focal length on a 36 mm frame, measured along the window's longer side.
@@ -19,41 +21,27 @@ var LENS_TALL_MM = 40;
 // fades in below square.
 var TALL_ASPECT = 0.8;
 
-// The model's Cam_Seat is a viewpoint for a wide shot of the whole desk.
-// Framed as tightly as the text needs, an eye that high looks down on the
-// desk enough to put the keyboard below the window, so in a landscape
-// window the eye sits this much lower (metres): nearer square to the
-// leaned-back face, with the back of the keyboard just under the terminal.
-// It is no lower than that because the model only has the faces that can be
-// seen from the eye positions its bake tried (viewpoints() in
-// tools/blender/build_scene.py), and their lower limit is a line rising
-// from 0.24 m above the desk at 0.62 m back to 0.45 m at 1.62 m. This drop
-// keeps the eye above that line, head movement included, in windows from
-// 4:3 to 21:9. A tall window has room for the keyboard anyway and keeps the
-// authored height.
-var EYE_DROP_M = 0.085;
+// In a landscape window the line of sight starts this much (metres) below
+// the model's Cam_Seat. A flatter line squashes the keyboard's depth on
+// screen and leaves more of the height to the terminal; the eye then steps
+// back along it until everything fits. The model only has the faces that
+// can be seen from the eye positions its bake tried (viewpoints() in
+// tools/blender/build_scene.py), whose lower limit is a line rising from
+// 0.24 m above the desk at 0.62 m back to 0.45 m at 1.62 m, and the eye has
+// to stay above it, head movement (about 1.3 cm) included, out to 21:9.
+var EYE_DROP_M = 0.05;
 
-// The text has to stay readable: in a landscape window the lit picture is
-// never less than this much of the window's height, even if that leaves
-// only the back edge of the keyboard in frame. (Before the room existed the
-// picture was 0.52 of the height.)
-var MIN_PICTURE = 0.445;
 
 // The seated view looks along the line the model's Cam_Seat and Cam_Target
 // mark out; how far back the eye sits along it depends on the window. The
-// terminal always fits, with this much of the frame spare around it.
+// terminal and the whole keyboard always fit, with this much of the frame
+// spare around them.
 var SEAT_MARGIN = 0.015;
-// A landscape window is short, and every row of keys in it costs the text
-// on the tube some of its size. So only the keys nearest the terminal are
-// promised a place at the bottom of the frame: this fraction of the key
-// field's depth, from the back, which is the function row.
-var TOP_ROWS = 0.05;
-// A tall window has height to spare, so every row of keys is in view under
-// the terminal. The keyboard is much the wider of the two, though, and
-// fitting all of it would halve the size of the picture; what is fitted
-// across the window is the terminal and the typing keys, Ctrl to Return
-// (these mark that block's right-hand edge). The editing keys and the
-// keypad run off the right and are reached by the look down.
+// In a tall window the keyboard is much the wider of the two, and fitting
+// all of it would halve the size of the picture; what is fitted across the
+// window there is the terminal and the typing keys, Ctrl to Return (these
+// mark that block's right-hand edge). The editing keys and the keypad run
+// off the right.
 var TYPING_EDGE = ["Enter", "Backspace", "ShiftRight"];
 // This share of the height still spare goes above the terminal, as wall,
 // and the rest below the keyboard, as desk.
@@ -111,31 +99,18 @@ function mix(a, b, k) {
 }
 
 // `model` is what buildModel returns. `terminal` and `keyboard` are the
-// meshes that make up each (the keyboard's without its keys);
-// `pictureHeight` is the height of the lit picture, in tube units.
-export function createRig(camera, model, terminal, keyboard, pictureHeight) {
+// meshes that make up each (the keyboard's without its keys).
+export function createRig(camera, model, terminal, keyboard) {
   var up = model.up;
   // Seat and target are both on the set's centre line, so which way is
   // "right" does not depend on how high the eye is.
   var right = new Vector3().subVectors(model.target, model.seat).cross(up).normalize();
-  var away = new Vector3().crossVectors(up, right);
 
   var terminalPts = vertices(terminal);
   var keyPts = model.keys.map(function (k) {
     return new Vector3().setFromMatrixPosition(k.matrixWorld);
   });
   var keyboardPts = vertices(keyboard).concat(keyPts);
-  // Rows nearest the terminal: the keys furthest from the viewer.
-  var depths = keyPts.map(function (p) {
-    return p.dot(away);
-  });
-  var far = Math.max.apply(null, depths);
-  var near = Math.min.apply(null, depths);
-  var topRowPts = vertices(
-    model.keys.filter(function (k, i) {
-      return depths[i] >= far - (far - near) * TOP_ROWS;
-    })
-  );
   // The typing keys: everything not to the right of Return. Should a model
   // name none of the keys that mark that edge, all of them count.
   var edge = -Infinity;
@@ -186,26 +161,16 @@ export function createRig(camera, model, terminal, keyboard, pictureHeight) {
     forward.subVectors(model.target, from).normalize();
     top.crossVectors(right, forward);
 
-    // Seated: from as far back as fits the terminal both ways (and, in a
-    // tall window, the typing keys across), with the nearest keys at the
-    // bottom.
+    // Seated: from as far back as fits the terminal and the whole keyboard
+    // both ways (in a tall window, only the typing keys across).
     var sx = tx * (1 - SEAT_MARGIN);
     var sy = ty * (1 - SEAT_MARGIN);
-    var h = span(terminalPts, right, forward, sx);
+    var h = span(terminalPts.concat(keyboardPts), right, forward, sx);
     var wide = span(terminalPts.concat(typingPts), right, forward, sx);
-    var fits = span(terminalPts, top, forward, sy);
-    var must = span(terminalPts.concat(topRowPts), top, forward, sy);
     var all = span(terminalPts.concat(keyboardPts), top, forward, sy);
-    // No further back than keeps the picture (at the origin, so -cz away)
-    // at its least size - unless the terminal itself would not fit.
-    var legible = -pictureHeight / (2 * ty * MIN_PICTURE);
-    var cz = Math.min(mix(h.depth, wide.depth, tall), fits.depth, Math.max(must.depth, legible));
-    // Whatever height is spare goes to the keyboard: if all of it fits,
-    // what is still spare is shared out above and below; otherwise as much
-    // keyboard as leaves the top of the terminal in frame.
-    var lo = all.lo + cz * sy;
-    var hi = all.hi - cz * sy;
-    var cy = lo <= hi ? mix(lo, hi, SPARE_ABOVE) : must.lo + cz * sy;
+    var cz = Math.min(mix(h.depth, wide.depth, tall), all.depth);
+    // Whatever height is still spare is shared out above and below.
+    var cy = mix(all.lo + cz * sy, all.hi - cz * sy, SPARE_ABOVE);
     place(seat, forward, top, mix(h.mid, wide.mid, tall), cy, cz, new Vector3());
 
     // Looking down: the whole keyboard, side to side and front to back.
