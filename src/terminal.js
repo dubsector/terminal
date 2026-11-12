@@ -50,6 +50,10 @@ var GL_MODE = (function () {
   var saveData = navigator.connection && navigator.connection.saveData;
   return !reduceMotion && !saveData;
 })();
+// While the scene loads the flat monitor stays hidden, so the visitor does
+// not see it appear and then be swapped out. release() below shows it again
+// if the scene can't run.
+if (GL_MODE) document.body.classList.add("gl-loading");
 var GL_COLS = 80;
 var GL_ROWS = 25;
 
@@ -1160,6 +1164,7 @@ if (GL_MODE) {
     // so the flat terminal goes back to fitting its box.
     release: function () {
       GL_MODE = false;
+      document.body.classList.remove("gl-loading");
       resizeTerminal();
     },
   };
