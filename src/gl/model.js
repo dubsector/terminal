@@ -11,6 +11,7 @@ import {
   Matrix4,
   Mesh,
   MeshBasicMaterial,
+  Quaternion,
   SRGBColorSpace,
   Texture,
   Vector3,
@@ -18,9 +19,34 @@ import {
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 
+// What build.mjs put in dist/assets: `files` maps each asset's name to the
+// content-hashed name it is served under, `sizes` lists the atlas sizes the
+// light maps come in, smallest first.
+/* global __ASSETS__ */
+var ASSETS = __ASSETS__;
+
 var ATLASES = ["hero", "env"];
 // The light passes baked into each atlas; they add up (see bakedMaterial).
 var PASSES = ["room", "lamp", "screen"];
+// The six maps take 64 MB each on the GPU at 4096, a quarter of that at
+// 2048. A phone or a small machine stops here.
+var SMALL_DEVICE_MAP_SIZE = 2048;
+
+// The atlas size to end up with, of those the build has: the largest the
+// GPU takes and the device can afford. ?lm=1024 (or any size) caps it, for
+// looking at a smaller set on a big machine.
+export function pickMapSize(maxTextureSize) {
+  var cap = maxTextureSize;
+  var asked = /[?&]lm=(\d+)(&|$)/.exec(window.location.search);
+  var coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+  if (asked) cap = Math.min(cap, +asked[1]);
+  else if (coarse || navigator.deviceMemory <= 4) cap = Math.min(cap, SMALL_DEVICE_MAP_SIZE);
+  var best = ASSETS.sizes[0];
+  ASSETS.sizes.forEach(function (size) {
+    if (size <= cap) best = size;
+  });
+  return best;
+}
 
 // Indicator colours. Period LEDs were dim yellow-green GaP parts, not the
 // saturated green of the phosphor; unlit, the lens is a dark olive.
@@ -34,14 +60,18 @@ var EMISSIVE_TOWARD_WHITE = 0.35;
 // The power switch is small on a phone, so the area that takes the click is
 // this many times the size of the cap.
 var BUTTON_COLLIDER_SCALE = 2.6;
-// Same for the desk lamp's switch, which is smaller still and further away.
-var LAMP_SWITCH_COLLIDER_SCALE = 3.2;
+// Same for the desk lamp's cord switch, body and rocker together.
+var LAMP_SWITCH_COLLIDER_SCALE = 1.25;
 
-// Starts every download at once. `promise` resolves with the parsed glTF
-// and the textures; dispose() stops whatever is still downloading and frees
-// whatever has arrived, for a load that is abandoned half way (a visitor on
-// a link slow enough to hit the timeout should not go on paying for it).
-export function loadModel(base) {
+// Starts the downloads for a first frame at once: the model, the reflection
+// images and the smallest light maps. `promise` resolves with the parsed
+// glTF and those textures. `better` follows it with the light maps at
+// `mapSize`, fetched once the first set is in so they do not hold it up
+// (null when the first set is already that size). dispose() stops whatever
+// is still downloading and frees whatever has arrived, for a load that is
+// abandoned half way (a visitor on a link slow enough to hit the timeout
+// should not go on paying for it).
+export function loadModel(base, mapSize) {
   var textures = [];
   var cancelled = false;
   var abort = new AbortController();
@@ -55,9 +85,22 @@ export function loadModel(base) {
   }
 
   function fetchFile(file, as) {
-    return fetch(base + file, { signal: abort.signal }).then(function (r) {
+    if (!ASSETS.files[file]) return Promise.reject(new Error("not in this build"));
+    return fetch(base + ASSETS.files[file], { signal: abort.signal }).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r[as]();
+    });
+  }
+
+  // The model goes out gzipped by the build (the CDN compresses scripts but
+  // not this), to be unpacked here; a browser that can't gets the plain file.
+  function fetchModel() {
+    var packed = typeof DecompressionStream === "function" && ASSETS.files["scene.glb.gz"];
+    return fetchFile(packed ? "scene.glb.gz" : "scene.glb", "arrayBuffer").then(function (buf) {
+      var head = new Uint8Array(buf, 0, 2);
+      // Already unpacked on the way here, if something served it as an encoding.
+      if (head[0] !== 0x1f || head[1] !== 0x8b) return buf;
+      return new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
     });
   }
 
@@ -95,33 +138,57 @@ export function loadModel(base) {
     });
   }
 
-  var jobs = [
-    fetchFile("scene.glb", "arrayBuffer")
-      .then(function (buf) {
-        return new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).parseAsync(buf, base);
-      })
-      .catch(failed("scene.glb")),
-    texture("reflect.webp"),
-    texture("reflect_off.webp"),
-  ];
-  ATLASES.forEach(function (name) {
-    PASSES.forEach(function (pass) {
-      jobs.push(lightMap("lm_" + name + "_" + pass + ".webp"));
+  // Every atlas's maps at one size: { hero: { room, lamp, screen }, env: ... }.
+  function mapSet(size) {
+    var jobs = [];
+    ATLASES.forEach(function (name) {
+      PASSES.forEach(function (pass) {
+        jobs.push(lightMap("lm_" + name + "_" + pass + "_" + size + ".webp"));
+      });
     });
-  });
-
-  return {
-    promise: Promise.all(jobs).then(function (r) {
+    return Promise.all(jobs).then(function (r) {
       var maps = {};
-      var k = 3;
+      var k = 0;
       ATLASES.forEach(function (name) {
         maps[name] = {};
         PASSES.forEach(function (pass) {
           maps[name][pass] = r[k++];
         });
       });
-      return { gltf: r[0], reflect: r[1], reflectOff: r[2], maps: maps };
+      return maps;
+    });
+  }
+
+  var firstSize = ASSETS.sizes[0];
+  var first = Promise.all([
+    fetchModel()
+      .then(function (buf) {
+        return new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).parseAsync(buf, base);
+      })
+      .catch(failed("scene.glb")),
+    texture("reflect.webp"),
+    texture("reflect_off.webp"),
+    mapSet(firstSize),
+  ]).then(function (r) {
+    return { gltf: r[0], reflect: r[1], reflectOff: r[2], maps: r[3] };
+  });
+
+  return {
+    promise: first,
+    better: first.then(function () {
+      return mapSize > firstSize && !cancelled ? mapSet(mapSize) : null;
     }),
+    // Frees a set of maps that has been replaced.
+    release: function (maps) {
+      ATLASES.forEach(function (name) {
+        PASSES.forEach(function (pass) {
+          var t = maps[name][pass];
+          textures.splice(textures.indexOf(t), 1);
+          t.dispose();
+          if (t.image && t.image.close) t.image.close();
+        });
+      });
+    },
     dispose: function () {
       cancelled = true;
       abort.abort();
@@ -149,11 +216,19 @@ function bakedMaterial(maps, ranges, light, legend) {
   });
   var screenScale = { value: ranges.screen / ranges.room };
   var lampScale = { value: ranges.lamp / ranges.room };
+  var screenMap = { value: maps.screen };
+  var lampMap = { value: maps.lamp };
+  // The same three maps at another size.
+  mat.userData.setMaps = function (next) {
+    mat.lightMap = next.room;
+    screenMap.value = next.screen;
+    lampMap.value = next.lamp;
+  };
   mat.onBeforeCompile = function (shader) {
-    shader.uniforms.screenLightMap = { value: maps.screen };
+    shader.uniforms.screenLightMap = screenMap;
     shader.uniforms.screenLight = light.screen;
     shader.uniforms.screenScale = screenScale;
-    shader.uniforms.lampLightMap = { value: maps.lamp };
+    shader.uniforms.lampLightMap = lampMap;
     shader.uniforms.lampLevel = light.lamp;
     shader.uniforms.lampScale = lampScale;
     shader.fragmentShader = shader.fragmentShader
@@ -243,6 +318,14 @@ export function buildModel(loaded, legends) {
     materials.push(mat);
     return mat;
   }
+  // Every material drawn with an atlas's light maps, and which atlas.
+  var baked = [];
+  function lit(atlas, legend) {
+    var maps = need(loaded.maps[atlas], "light maps for atlas " + atlas);
+    var mat = keep(bakedMaterial(maps, ranges[atlas], light, legend));
+    baked.push({ material: mat, atlas: atlas });
+    return mat;
+  }
   var plain = {};
   var keyed = null;
   var strip = null;
@@ -280,17 +363,15 @@ export function buildModel(loaded, legends) {
       o.material = keep(new MeshBasicMaterial({ color: 0x000000 }));
     } else {
       var atlas = need(x.atlas, "atlas of " + o.name);
-      var maps = need(loaded.maps[atlas], "light maps for atlas " + atlas);
-      var r = ranges[atlas];
       if (x.code !== undefined) {
         // Keys share one extra texture, the legends, on the first UV set.
-        keyed = keyed || keep(bakedMaterial(maps, r, light, legends.keys));
+        keyed = keyed || lit(atlas, legends.keys);
         o.material = keyed;
       } else if (o.name === "LegendStrip") {
-        strip = keep(bakedMaterial(maps, r, light, legends.strip));
+        strip = lit(atlas, legends.strip);
         o.material = strip;
       } else {
-        plain[atlas] = plain[atlas] || keep(bakedMaterial(maps, r, light, null));
+        plain[atlas] = plain[atlas] || lit(atlas, null);
         o.material = plain[atlas];
       }
       meshes.push(o);
@@ -320,26 +401,28 @@ export function buildModel(loaded, legends) {
 
   var powerLed = need(leds.PowerLED, "PowerLED");
 
-  // Desk lamp switch: the rocker on the cord switch, which dips straight down (the
-  // room's down, which is not the tube's), with its own larger collider.
+  // Desk lamp switch: the rocker of the switch on its cord. It is modelled
+  // level and tips about an axis through its own origin, one way for on and
+  // the other for off. The axis is given in Blender's axes; the file's are
+  // (x, z, -y). One larger collider covers the rocker and the switch body.
   var lampSwitch = node("Lamp_Switch");
-  var lampSwitchRest = lampSwitch.position.clone();
-  var toSwitchParent = new Matrix4().copy(lampSwitch.parent.matrixWorld).invert();
-  var lampSwitchPush = up
-    .clone()
-    .negate()
-    .transformDirection(toSwitchParent)
-    .multiplyScalar(need(lampSwitch.userData.travel, "Lamp_Switch travel") / need(extras.tube_unit, "tube_unit"));
+  var lampSwitchRest = lampSwitch.quaternion.clone();
+  var axis = need(lampSwitch.userData.axis, "Lamp_Switch axis");
+  var lampSwitchAxis = new Vector3(axis[0], axis[2], -axis[1]).normalize();
+  var lampSwitchOn = need(lampSwitch.userData.angle_on, "Lamp_Switch angle_on");
+  var lampSwitchOff = need(lampSwitch.userData.angle_off, "Lamp_Switch angle_off");
+  var lampSwitchTurn = new Quaternion();
   var sbox = new Box3().setFromObject(lampSwitch);
-  var ssize = sbox.getSize(new Vector3());
-  var s = Math.max(ssize.x, ssize.z) * LAMP_SWITCH_COLLIDER_SCALE;
-  var lampColliderGeo = new BoxGeometry(s, ssize.y * LAMP_SWITCH_COLLIDER_SCALE, s);
+  var lampSwitchBody = root.getObjectByName("Lamp_SwitchBody");
+  if (lampSwitchBody) sbox.expandByObject(lampSwitchBody);
+  var ssize = sbox.getSize(new Vector3()).multiplyScalar(LAMP_SWITCH_COLLIDER_SCALE);
+  var lampColliderGeo = new BoxGeometry(ssize.x, ssize.y, ssize.z);
   var lampCollider = new Mesh(lampColliderGeo, keep(new MeshBasicMaterial()));
   sbox.getCenter(lampCollider.position);
   lampCollider.visible = false;
   lampCollider.updateMatrixWorld(true);
 
-  return {
+  var model = {
     root: root,
     collider: collider,
     lampCollider: lampCollider,
@@ -358,6 +441,13 @@ export function buildModel(loaded, legends) {
     makeBakedMaterial: function (maps, atlas, map) {
       return bakedMaterial(maps, ranges[atlas], light, map || null);
     },
+    // Draws the set with the same light maps at another size.
+    setMaps: function (maps) {
+      baked.forEach(function (b) {
+        b.material.userData.setMaps(maps[b.atlas]);
+      });
+      model.maps = maps;
+    },
     // 0..1: how much of the lamp's light is in the room.
     setLamp: function (level) {
       lampLevel.value = level;
@@ -365,9 +455,10 @@ export function buildModel(loaded, legends) {
         g.material.color.copy(g.off).lerp(g.on, level);
       });
     },
-    // 0 = up, 1 = pushed down.
-    setLampSwitch: function (pressed) {
-      lampSwitch.position.copy(lampSwitchRest).addScaledVector(lampSwitchPush, pressed);
+    // 0 = tipped to off, 1 = tipped to on, anything between is on its way over.
+    setLampSwitch: function (on) {
+      lampSwitchTurn.setFromAxisAngle(lampSwitchAxis, lampSwitchOff + (lampSwitchOn - lampSwitchOff) * on);
+      lampSwitch.quaternion.copy(lampSwitchRest).multiply(lampSwitchTurn);
     },
     button: button,
     // Everything a ray can be stopped by.
@@ -408,4 +499,5 @@ export function buildModel(loaded, legends) {
       });
     },
   };
+  return model;
 }

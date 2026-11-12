@@ -41,7 +41,8 @@ var terminalEl = document.getElementById("terminal");
 //
 // ?gl=0 always gives the flat site and ?gl=1 always tries the scene.
 // Otherwise visitors who ask for reduced motion (the view moves with the
-// pointer) or to save data (it downloads about 1.6 MB) get the flat site.
+// pointer) or to save data (it downloads about 1.1 MB for its first frame
+// and up to 2.7 MB of sharper light maps after it) get the flat site.
 var GL_MODE = (function () {
   var q = window.location.search;
   if (/[?&]gl=0(&|$)/.test(q)) return false;
