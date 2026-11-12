@@ -1,9 +1,10 @@
 // Where the viewer sits, worked out from the model rather than typed in: a
 // seated view with the terminal and the whole keyboard in frame, so every
 // key can be clicked without the view moving. The camera drifts a little
-// with the pointer, the way a head moves. A tall window (a phone) cannot fit
-// the keyboard at a size a finger can hit, so there a tap on the keys eases
-// to a closer look down at them.
+// with the pointer, the way a head moves. A tall window (a phone) is too
+// narrow for that: there the seated view is close in on the screen, so the
+// text can be read, and a tap on the keys below it eases to a look down at
+// them.
 import { Vector3 } from "three";
 
 // Focal length on a 36 mm frame, measured along the window's longer side.
@@ -37,11 +38,16 @@ var EYE_DROP_M = 0.05;
 // terminal and the whole keyboard always fit, with this much of the frame
 // spare around them.
 var SEAT_MARGIN = 0.015;
-// In a tall window the keyboard is much the wider of the two, and fitting
-// all of it would halve the size of the picture; what is fitted across the
-// window there is the terminal and the typing keys, Ctrl to Return (these
-// mark that block's right-hand edge). The editing keys and the keypad run
-// off the right.
+// In a tall window the seated view fits only the lit picture across the
+// window (this much wider than it, so the bezel just shows), with its top
+// this share of the window's height down from the top; the keyboard shows
+// below it, ready to be tapped. Eighty columns across a phone is the most
+// the text can be.
+var SCREEN_MARGIN_TALL = 1.06;
+var SCREEN_TOP_TALL = 0.1;
+// The look down in a tall window fits the typing keys across it, Ctrl to
+// Return (these mark that block's right-hand edge). The editing keys and the
+// keypad run off the right.
 var TYPING_EDGE = ["Enter", "Backspace", "ShiftRight"];
 // This share of the height still spare goes above the terminal, as wall,
 // and the rest below the keyboard, as desk.
@@ -99,14 +105,22 @@ function mix(a, b, k) {
 }
 
 // `model` is what buildModel returns. `terminal` and `keyboard` are the
-// meshes that make up each (the keyboard's without its keys).
-export function createRig(camera, model, terminal, keyboard) {
+// meshes that make up each (the keyboard's without its keys); `picture` is
+// the lit picture's half width and half height, in tube units.
+export function createRig(camera, model, terminal, keyboard, picture) {
   var up = model.up;
   // Seat and target are both on the set's centre line, so which way is
   // "right" does not depend on how high the eye is.
   var right = new Vector3().subVectors(model.target, model.seat).cross(up).normalize();
 
   var terminalPts = vertices(terminal);
+  // The tube sits at the origin of this space, facing +z.
+  var screenPts = [];
+  [-1, 1].forEach(function (sx) {
+    [-1, 1].forEach(function (sy) {
+      screenPts.push(new Vector3(sx * picture[0] * SCREEN_MARGIN_TALL, sy * picture[1] * SCREEN_MARGIN_TALL, 0));
+    });
+  });
   var keyPts = model.keys.map(function (k) {
     return new Vector3().setFromMatrixPosition(k.matrixWorld);
   });
@@ -166,12 +180,21 @@ export function createRig(camera, model, terminal, keyboard) {
     var sx = tx * (1 - SEAT_MARGIN);
     var sy = ty * (1 - SEAT_MARGIN);
     var h = span(terminalPts.concat(keyboardPts), right, forward, sx);
-    var wide = span(terminalPts.concat(typingPts), right, forward, sx);
     var all = span(terminalPts.concat(keyboardPts), top, forward, sy);
-    var cz = Math.min(mix(h.depth, wide.depth, tall), all.depth);
-    // Whatever height is still spare is shared out above and below.
+    // A tall window: only the screen, across.
+    var scr = span(screenPts, right, forward, sx);
+    var cz = mix(Math.min(h.depth, all.depth), scr.depth, tall);
+    // Whatever height is still spare is shared out above and below; in a
+    // tall window the screen's top sits SCREEN_TOP_TALL down instead. (A
+    // point at height a and depth z is at the top of the frame when the eye
+    // is at a - (z - cz) t, and k of the height down at a - (z - cz) t (1 - 2k).)
     var cy = mix(all.lo + cz * sy, all.hi - cz * sy, SPARE_ABOVE);
-    place(seat, forward, top, mix(h.mid, wide.mid, tall), cy, cz, new Vector3());
+    var cyTall = -Infinity;
+    for (var i = 0; i < screenPts.length; i++) {
+      var p = screenPts[i];
+      cyTall = Math.max(cyTall, p.dot(top) - (p.dot(forward) - cz) * sy * (1 - 2 * SCREEN_TOP_TALL));
+    }
+    place(seat, forward, top, mix(h.mid, scr.mid, tall), mix(cy, cyTall, tall), cz, new Vector3());
 
     // Looking down: the whole keyboard, side to side and front to back.
     var tip = LOOK_DOWN_RAD;

@@ -421,7 +421,7 @@ function start(crt) {
       return root.getObjectByName(name);
     }).filter(Boolean);
     if (!terminal.length) throw new Error("model has no terminal to frame");
-    rig = createRig(camera, model, terminal, [model.keyboard]);
+    rig = createRig(camera, model, terminal, [model.keyboard], [FACE_HALF_W * RASTER.scaleX, FACE_HALF_H * RASTER.scaleY]);
 
     keys = createKeys(
       model.keys,

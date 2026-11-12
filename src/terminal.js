@@ -40,21 +40,20 @@ var terminalEl = document.getElementById("terminal");
 // can't run, this flat terminal is what the visitor sees.
 //
 // ?gl=0 always gives the flat site and ?gl=1 always tries the scene.
-// Otherwise the flat site goes to phones and tablets (no mouse to hover
-// with: an 80-column tube is too small to read there, and the flat terminal
-// fits the screen), and to visitors who ask for reduced motion (the view
-// moves with the pointer) or to save data (it downloads about 1.6 MB).
+// Otherwise visitors who ask for reduced motion (the view moves with the
+// pointer) or to save data (it downloads about 1.6 MB) get the flat site.
 var GL_MODE = (function () {
   var q = window.location.search;
   if (/[?&]gl=0(&|$)/.test(q)) return false;
   if (/[?&]gl=1(&|$)/.test(q)) return true;
-  function media(query) {
-    return !!(window.matchMedia && window.matchMedia(query).matches);
-  }
-  var touchOnly = media("(hover: none)") || media("(pointer: coarse)");
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var saveData = navigator.connection && navigator.connection.saveData;
-  return !touchOnly && !media("(prefers-reduced-motion: reduce)") && !saveData;
+  return !reduceMotion && !saveData;
 })();
+// While the scene loads the flat monitor stays hidden, so the visitor does
+// not see it appear and then be swapped out. release() below shows it again
+// if the scene can't run.
+if (GL_MODE) document.body.classList.add("gl-loading");
 var GL_COLS = 80;
 var GL_ROWS = 25;
 
@@ -1165,6 +1164,7 @@ if (GL_MODE) {
     // so the flat terminal goes back to fitting its box.
     release: function () {
       GL_MODE = false;
+      document.body.classList.remove("gl-loading");
       resizeTerminal();
     },
   };

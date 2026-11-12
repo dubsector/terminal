@@ -361,7 +361,8 @@ body.keyboard-open {
   z-index:5;
   touch-action:none;
 }
-body.gl-on .monitor{
+body.gl-on .monitor,
+body.gl-loading .monitor{
   opacity:0;
   pointer-events:none;
 }
