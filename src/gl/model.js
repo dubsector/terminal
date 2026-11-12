@@ -19,6 +19,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 
 var ATLASES = ["hero", "env"];
+// The light passes baked into each atlas; they add up (see bakedMaterial).
+var PASSES = ["room", "lamp", "screen"];
 
 // Indicator colours. Period LEDs were dim yellow-green GaP parts, not the
 // saturated green of the phosphor; unlit, the lens is a dark olive.
@@ -32,6 +34,8 @@ var EMISSIVE_TOWARD_WHITE = 0.35;
 // The power switch is small on a phone, so the area that takes the click is
 // this many times the size of the cap.
 var BUTTON_COLLIDER_SCALE = 2.6;
+// Same for the desk lamp's switch, which is smaller still and further away.
+var LAMP_SWITCH_COLLIDER_SCALE = 3.2;
 
 // Starts every download at once. `promise` resolves with the parsed glTF
 // and the textures; dispose() stops whatever is still downloading and frees
@@ -98,18 +102,25 @@ export function loadModel(base) {
       })
       .catch(failed("scene.glb")),
     texture("reflect.webp"),
+    texture("reflect_off.webp"),
   ];
   ATLASES.forEach(function (name) {
-    jobs.push(lightMap("lm_" + name + "_room.webp"), lightMap("lm_" + name + "_screen.webp"));
+    PASSES.forEach(function (pass) {
+      jobs.push(lightMap("lm_" + name + "_" + pass + ".webp"));
+    });
   });
 
   return {
     promise: Promise.all(jobs).then(function (r) {
       var maps = {};
-      ATLASES.forEach(function (name, i) {
-        maps[name] = { room: r[2 + i * 2], screen: r[3 + i * 2] };
+      var k = 3;
+      ATLASES.forEach(function (name) {
+        maps[name] = {};
+        PASSES.forEach(function (pass) {
+          maps[name][pass] = r[k++];
+        });
       });
-      return { gltf: r[0], reflect: r[1], maps: maps };
+      return { gltf: r[0], reflect: r[1], reflectOff: r[2], maps: maps };
     }),
     dispose: function () {
       cancelled = true;
@@ -123,37 +134,43 @@ export function loadModel(base) {
   };
 }
 
-// MeshBasicMaterial's light map, plus a second map on the same texels that
-// holds the light the lit picture throws, scaled by one uniform shared by
-// every material. three multiplies the light map by lightMapIntensity / PI,
-// and the room map stores radiance / range, so the intensity is PI * range;
-// the screen map has its own range, hence the ratio.
-function bakedMaterial(maps, roomRange, screenRange, screenLight, legend) {
+// MeshBasicMaterial's light map (the room: window and dusk sky), plus two
+// more maps on the same texels: the light of the desk lamp, scaled by how
+// far on the lamp is, and the light the lit picture throws, scaled by its
+// colour and level. Both scales are uniforms shared by every material.
+// three multiplies the light map by lightMapIntensity / PI, and the room map
+// stores radiance / range, so the intensity is PI * range; the other maps
+// have their own ranges, hence the ratios.
+function bakedMaterial(maps, ranges, light, legend) {
   var mat = new MeshBasicMaterial({
     lightMap: maps.room,
-    lightMapIntensity: Math.PI * roomRange,
+    lightMapIntensity: Math.PI * ranges.room,
     map: legend || null,
   });
-  var screenScale = { value: screenRange / roomRange };
+  var screenScale = { value: ranges.screen / ranges.room };
+  var lampScale = { value: ranges.lamp / ranges.room };
   mat.onBeforeCompile = function (shader) {
     shader.uniforms.screenLightMap = { value: maps.screen };
-    shader.uniforms.screenLight = screenLight;
+    shader.uniforms.screenLight = light.screen;
     shader.uniforms.screenScale = screenScale;
+    shader.uniforms.lampLightMap = { value: maps.lamp };
+    shader.uniforms.lampLevel = light.lamp;
+    shader.uniforms.lampScale = lampScale;
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <lightmap_pars_fragment>",
-        "#include <lightmap_pars_fragment>\nuniform sampler2D screenLightMap;\nuniform vec3 screenLight;\nuniform float screenScale;"
+        "#include <lightmap_pars_fragment>\nuniform sampler2D screenLightMap;\nuniform vec3 screenLight;\nuniform float screenScale;\nuniform sampler2D lampLightMap;\nuniform float lampLevel;\nuniform float lampScale;"
       )
       .replace(
         "vec4 lightMapTexel = texture2D( lightMap, vLightMapUv );",
-        "vec4 lightMapTexel = texture2D( lightMap, vLightMapUv );\n\t\tlightMapTexel.rgb += texture2D( screenLightMap, vLightMapUv ).rgb * screenLight * screenScale;"
+        "vec4 lightMapTexel = texture2D( lightMap, vLightMapUv );\n\t\tlightMapTexel.rgb += texture2D( lampLightMap, vLightMapUv ).rgb * lampLevel * lampScale;\n\t\tlightMapTexel.rgb += texture2D( screenLightMap, vLightMapUv ).rgb * screenLight * screenScale;"
       );
     // three's shader text is not an API. If an upgrade moves the anchor the
     // set would silently lose its glow, so fail loudly instead.
-    if (shader.fragmentShader.indexOf("screenLightMap, vLightMapUv") < 0) throw new Error("light map patch did not apply");
+    if (shader.fragmentShader.indexOf("lampLightMap, vLightMapUv") < 0) throw new Error("light map patch did not apply");
   };
   mat.customProgramCacheKey = function () {
-    return "screenLight1";
+    return "screenLight2";
   };
   return mat;
 }
@@ -163,9 +180,9 @@ function bakedMaterial(maps, roomRange, screenRange, screenLight, legend) {
 // the glass's place would have, and the direction most of that light comes
 // from. The direction is stored in TubeRef local axes (x right, z up the
 // face, -y out of the screen); tube space here has y up and +z out.
-function roomLight(extras) {
-  var c = need(extras.glass_light, "glass_light");
-  var d = need(extras.glass_light_dir, "glass_light_dir");
+function roomLight(extras, suffix) {
+  var c = need(extras["glass_light" + suffix], "glass_light" + suffix);
+  var d = need(extras["glass_light_dir" + suffix], "glass_light_dir" + suffix);
   return {
     color: new Color(c[0], c[1], c[2]),
     direction: new Vector3(d[0], d[2], -d[1]).normalize(),
@@ -186,12 +203,13 @@ export function buildModel(loaded, legends) {
   var extras = root.userData || {};
   var ranges = {};
   ATLASES.forEach(function (name) {
-    ranges[name] = {
-      room: need(extras["room_range_" + name], "room_range_" + name),
-      screen: need(extras["screen_range_" + name], "screen_range_" + name),
-    };
+    ranges[name] = {};
+    PASSES.forEach(function (pass) {
+      ranges[name][pass] = need(extras[pass + "_range_" + name], pass + "_range_" + name);
+    });
   });
   var reflectRange = need(extras.reflect_range, "reflect_range");
+  var reflectRangeOff = need(extras.reflect_range_off, "reflect_range_off");
   var tanHalfFov = Math.tan((need(extras.reflect_fov_deg, "reflect_fov_deg") * Math.PI) / 360);
 
   function node(name) {
@@ -214,6 +232,12 @@ export function buildModel(loaded, legends) {
   var target = new Vector3().setFromMatrixPosition(node("Cam_Target").matrixWorld);
 
   var screenLight = { value: new Color(0, 0, 0) };
+  // 0 = lamp off, 1 = on.
+  var lampLevel = { value: 1 };
+  var light = { screen: screenLight, lamp: lampLevel };
+  // Unlit surfaces lit by the lamp (the inside of the shade, the bulb): their
+  // colour with the lamp on and off.
+  var glows = [];
   var materials = [];
   function keep(mat) {
     materials.push(mat);
@@ -243,6 +267,12 @@ export function buildModel(loaded, legends) {
       var peak = Math.max(e[0], e[1], e[2]) || 1;
       var glow = new Color(e[0] / peak, e[1] / peak, e[2] / peak).lerp(new Color(1, 1, 1), EMISSIVE_TOWARD_WHITE);
       o.material = keep(new MeshBasicMaterial({ color: glow }));
+      if (o.name.indexOf("Lamp_") === 0) {
+        // With the lamp off it is an ordinary surface again, lit only by the
+        // room: the bake's radiance for it, drawn as is.
+        var f = x.emissive_off || [0, 0, 0];
+        glows.push({ material: o.material, on: glow.clone(), off: new Color(f[0], f[1], f[2]) });
+      }
     } else if (x.role === "backing") {
       // The cabinet is hollow. This cap sits just behind the glass and keeps
       // the wall from showing through wherever the face mesh does not reach
@@ -254,13 +284,13 @@ export function buildModel(loaded, legends) {
       var r = ranges[atlas];
       if (x.code !== undefined) {
         // Keys share one extra texture, the legends, on the first UV set.
-        keyed = keyed || keep(bakedMaterial(maps, r.room, r.screen, screenLight, legends.keys));
+        keyed = keyed || keep(bakedMaterial(maps, r, light, legends.keys));
         o.material = keyed;
       } else if (o.name === "LegendStrip") {
-        strip = keep(bakedMaterial(maps, r.room, r.screen, screenLight, legends.strip));
+        strip = keep(bakedMaterial(maps, r, light, legends.strip));
         o.material = strip;
       } else {
-        plain[atlas] = plain[atlas] || keep(bakedMaterial(maps, r.room, r.screen, screenLight, null));
+        plain[atlas] = plain[atlas] || keep(bakedMaterial(maps, r, light, null));
         o.material = plain[atlas];
       }
       meshes.push(o);
@@ -290,9 +320,29 @@ export function buildModel(loaded, legends) {
 
   var powerLed = need(leds.PowerLED, "PowerLED");
 
+  // Desk lamp switch: a cap on the lamp base that pushes straight down (the
+  // room's down, which is not the tube's), with its own larger collider.
+  var lampSwitch = node("Lamp_Switch");
+  var lampSwitchRest = lampSwitch.position.clone();
+  var toSwitchParent = new Matrix4().copy(lampSwitch.parent.matrixWorld).invert();
+  var lampSwitchPush = up
+    .clone()
+    .negate()
+    .transformDirection(toSwitchParent)
+    .multiplyScalar(need(lampSwitch.userData.travel, "Lamp_Switch travel") / need(extras.tube_unit, "tube_unit"));
+  var sbox = new Box3().setFromObject(lampSwitch);
+  var ssize = sbox.getSize(new Vector3());
+  var s = Math.max(ssize.x, ssize.z) * LAMP_SWITCH_COLLIDER_SCALE;
+  var lampColliderGeo = new BoxGeometry(s, ssize.y * LAMP_SWITCH_COLLIDER_SCALE, s);
+  var lampCollider = new Mesh(lampColliderGeo, keep(new MeshBasicMaterial()));
+  sbox.getCenter(lampCollider.position);
+  lampCollider.visible = false;
+  lampCollider.updateMatrixWorld(true);
+
   return {
     root: root,
     collider: collider,
+    lampCollider: lampCollider,
     // Metres per tube unit.
     unit: need(extras.tube_unit, "tube_unit"),
     // Room vertical and the authored viewpoint, in tube space.
@@ -306,8 +356,18 @@ export function buildModel(loaded, legends) {
     maps: loaded.maps,
     ranges: ranges,
     makeBakedMaterial: function (maps, atlas, map) {
-      var r = ranges[atlas];
-      return bakedMaterial(maps, r.room, r.screen, screenLight, map || null);
+      return bakedMaterial(maps, ranges[atlas], light, map || null);
+    },
+    // 0..1: how much of the lamp's light is in the room.
+    setLamp: function (level) {
+      lampLevel.value = level;
+      glows.forEach(function (g) {
+        g.material.color.copy(g.off).lerp(g.on, level);
+      });
+    },
+    // 0 = up, 1 = pushed down.
+    setLampSwitch: function (pressed) {
+      lampSwitch.position.copy(lampSwitchRest).addScaledVector(lampSwitchPush, pressed);
     },
     button: button,
     // Everything a ray can be stopped by.
@@ -318,7 +378,14 @@ export function buildModel(loaded, legends) {
       range: reflectRange,
       // Half the image per unit of tan(angle off the axis).
       scale: 0.5 / tanHalfFov,
-      light: roomLight(extras),
+      light: roomLight(extras, ""),
+    },
+    // What the glass mirrors, and how the room lights it, with the lamp off.
+    reflectOff: {
+      texture: loaded.reflectOff,
+      range: reflectRangeOff,
+      scale: 0.5 / tanHalfFov,
+      light: roomLight(extras, "_off"),
     },
     setPowerLed: function (on) {
       powerLed.color.set(on ? LED_ON : LED_OFF);
@@ -335,6 +402,7 @@ export function buildModel(loaded, legends) {
         if (o.isMesh) o.geometry.dispose();
       });
       colliderGeo.dispose();
+      lampColliderGeo.dispose();
       materials.forEach(function (m) {
         m.dispose();
       });

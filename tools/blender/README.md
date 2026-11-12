@@ -27,6 +27,7 @@ Objects are found by name; custom properties become glTF `extras`.
 | `TubeRef` | Empty at the centre of the glass opening. Local +X right, +Z up the face, -Y out of the screen. Scale `TUBE_UNIT` (0.06096), so its local space is the tube space of `src/scene.js`: opening is x ±2.0, z ±1.5; the glass apex is at local y = -0.05. The page moves the whole model so this empty sits at its origin. |
 | `PowerButton` | Front push switch. Property `travel` (m) along TubeRef local +Y when pressed in. |
 | `PowerLED` | Power lamp lens. The page recolours it; it is not in the baked maps. |
+| `Lamp_Switch` | Push switch on the desk lamp's base. Property `travel` (m), straight down (room -Z) when pressed. Baked like any other part (env atlas); every face is kept. |
 | `Key_<id>` | One per key. Properties: `code` (KeyboardEvent.code, or `VT_<Name>` for keys with no modern twin), `legend`, `legend2` (shifted/second line, may be empty), `cell` (index into the 16 x 8 legend atlas), `w`, `h` (cap size in key units), `tone` (`cream` or `taupe`), `travel` (m, along the keyboard's local -Z). Also `top_w`, `top_h` (m): the rectangle of the cap top that the atlas cell, inset 6%, is stretched over; draw the legend with the aspect `top_w / top_h`, not `w / h` (1u is 14.15 x 14.6 mm, 2u is 33.2 x 14.6 mm; for the L-shaped Return it is the bounding box). `stack` says what `legend2` is: `"shift"` (shifted glyph, drawn above `legend`), `"line"` (second line of a word legend) or `""`. The 20 function-row keys have an empty `legend` and carry `strip` (the text printed on the legend strip above them) and `strip_u` (0..1 position of the key's centre along `LegendStrip`). Side faces of a cap all use the UV point 90% across, 90% down the cell, which the page must leave blank. |
 | `Keyboard` | Keyboard case; parent of every `Key_*`, `LegendStrip`, `Kbd_*`. Rests on z = 0, front edge y = 0, rear y = +0.171 in its own space. |
 | `LegendStrip` | Grey label strip above the function row. `UVMap` spans 0..1 (u left to right, v = 0 at the edge nearest the keys in Blender, so v = 1 there after the glTF flip). Properties `x0`, `x1` (m, keyboard local x of its ends). Its grey and red rule are in the baked maps; the page may draw the label text over it. |
@@ -67,9 +68,9 @@ Quick look: `--samples 32 --size 1024 --no-beauty --preview <dir>` (about 3 minu
 | File | Content |
 |---|---|
 | `scene.glb` | Geometry only, one plain material, no images. `EXT_meshopt_compression` (required). Every mesh has `TEXCOORD_0` (`UVMap`, meaningful on keys and `LegendStrip` only) and `TEXCOORD_1` (`Lightmap`). |
-| `lm_hero_room.webp`, `lm_hero_screen.webp` | Atlas "hero": terminal, keyboard case, keys, strip, cable. |
-| `lm_env_room.webp`, `lm_env_screen.webp` | Atlas "env": desk, desk wall, left wall, floor, skirting, props, lamp. |
-| `reflect.webp` | 512 px view out of the screen, for the glass reflection. |
+| `lm_hero_room.webp`, `lm_hero_lamp.webp`, `lm_hero_screen.webp` | Atlas "hero": terminal, keyboard case, keys, strip, cable. |
+| `lm_env_room.webp`, `lm_env_lamp.webp`, `lm_env_screen.webp` | Atlas "env": desk, desk wall, left wall, floor, skirting, props, lamp. |
+| `reflect.webp`, `reflect_off.webp` | 512 px view out of the screen, for the glass reflection: desk lamp on, and off. |
 
 Faces no visitor's camera can see (tested from a set of eye positions around
 `Cam_Seat`: sideways parallax, pulled back for a portrait phone, raised to
@@ -84,18 +85,21 @@ wall is exported (a low, wide framing from the right catches it).
 |---|---|---|
 | `atlas` | every lightmapped mesh | `"hero"` or `"env"`: which pair of maps its `TEXCOORD_1` addresses. |
 | `role = "led"` | `PowerLED`, `Kbd_LED_*` | Drawn unlit in a colour the page chooses. No `atlas`; their `TEXCOORD_1` is zero. |
-| `role = "emissive"`, `emissive = [r, g, b]` | `Lamp_ShadeGlow`; `Lamp_Bulb` when it is exported | Drawn unlit in that linear display colour (already clamped to 1). `Lamp_ShadeGlow` is the part of the lamp shade's inside next to the bulb, which is brighter than the env map's range; it also carries `emissive_radiance`, the unclamped mean radiance, for a bloom pass. No `atlas`; `TEXCOORD_1` is zero. Only eyes below about z = 0.3 m see it. |
+| `role = "emissive"`, `emissive = [r, g, b]` | `Lamp_ShadeGlow`; `Lamp_Bulb` when it is exported | Drawn unlit in that linear display colour (already clamped to 1). `Lamp_ShadeGlow` is the part of the lamp shade's inside next to the bulb, which is brighter than the env map's range; it also carries `emissive_radiance`, the unclamped mean radiance, for a bloom pass, and `emissive_off`, its mean radiance from the room light alone (the colour to draw it with the lamp switched off). No `atlas`; `TEXCOORD_1` is zero. Only eyes below about z = 0.3 m see it. |
 | `role = "backing"` | `ScreenBacking` | Opaque cap 2 mm behind the glass surface, a little larger than the opening (x ±2.06, z ±1.56 tube units). `GlassProxy` is not exported and the cabinet is hollow, so without it the opening shows the wall behind the terminal. Draw it unlit black (or leave it out only if the page's own tube mesh is opaque and reaches the collar lip everywhere). No `atlas`; `TEXCOORD_1` is zero. |
 
 ### Lightmaps
 
-Both maps of an atlas share the same texels. They hold outgoing radiance with
-the surface colour already multiplied in (Cycles diffuse direct + indirect +
-colour), stored as 8-bit sRGB of `radiance / range`:
+The three maps of an atlas share the same texels. They hold outgoing radiance
+with the surface colour already multiplied in (Cycles diffuse direct +
+indirect + colour), stored as 8-bit sRGB of `radiance / range`. "room" is
+lit by the window and the dusk sky, "lamp" by the desk lamp alone, "screen"
+by the picture alone; light adds, so
 
-    colour = decode(lm_X_room) * room_range_X + decode(lm_X_screen) * screen_range_X * E
+    colour = decode(lm_X_room) * room_range_X + decode(lm_X_lamp) * lamp_range_X * L
+           + decode(lm_X_screen) * screen_range_X * E
 
-where `decode` is the sRGB to linear conversion (`SRGBColorSpace` does it),
+with `L` 1 for the lamp on and 0 for off, where `decode` is the sRGB to linear conversion (`SRGBColorSpace` does it),
 `X` is the mesh's `atlas`, and `E` is the linear RGB radiance of the lit
 picture averaged over the picture area (phosphor colour x mean picture
 level). The screen maps were baked with the picture area (the centre
@@ -111,7 +115,7 @@ the screen map added inside the patched shader as
 Each range is the map's brightest texel when that is at most 1.5 x the 99.9th
 percentile (nothing clips), otherwise the 99.9th percentile. One exception:
 the inside of `Lamp_Shade`, a few centimetres from the bulb and ten times
-brighter than anything else, is left out when the env room range is chosen.
+brighter than anything else, is left out when the ranges are chosen.
 Its faces above the range are moved to `Lamp_ShadeGlow` (unlit, see above);
 the rim of faces next to them clips (0.16% of that map). Last build: room
 0.9445 (hero) and 0.8202 (env), screen 0.1662 (hero) and 0.03019 (env),
@@ -142,13 +146,15 @@ and ranges) if a low-memory fallback is wanted.
 |---|---|
 | `room_range_hero`, `room_range_env` | Range of the two room maps. |
 | `screen_range_hero`, `screen_range_env` | Range of the two screen maps. |
-| `reflect_range` | Range of `reflect.webp`. |
+| `lamp_range_hero`, `lamp_range_env` | Range of the two lamp maps. |
+| `reflect_range`, `reflect_range_off` | Range of `reflect.webp` and `reflect_off.webp`. |
 | `tube_unit` | Metres per tube unit (0.06096), the scale of `TubeRef`. |
 | `lightmap_size` | Atlas size in pixels. |
 | `picture_scale` | `[0.88, 0.84]`, the lit part of the opening used for the screen bake. |
 | `reflect_fov_deg` | 90. |
 | `glass_light` | Linear RGB radiance a matt white surface at the glass apex would have (irradiance / pi), integrated over the full hemisphere from a 180 degree fisheye render with the glass hidden. Lights the unlit phosphor. |
 | `glass_light_dir` | Luminance-weighted mean direction that light arrives from, TubeRef local axes (x right, z up the face, -y out of the screen). |
+| `glass_light_off`, `glass_light_dir_off` | The same two with the desk lamp switched off. |
 
 ### Reflection image
 

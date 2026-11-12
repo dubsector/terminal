@@ -82,6 +82,13 @@ var SCREEN_GLOW_LAG_S = 0.3;
 
 // The power switch latches in over about this long.
 var BUTTON_PRESS_S = 0.08;
+// The desk lamp's push switch goes down and comes back up in this long.
+var LAMP_SWITCH_PRESS_S = 0.18;
+// Time constants of the lamp's light coming up and dying away: a small
+// incandescent filament heats in a few hundredths of a second and glows on
+// for a little longer as it cools.
+var LAMP_WARM_S = 0.035;
+var LAMP_COOL_S = 0.09;
 // In a tall window (where the seated view has the keys, but small), the
 // pointer in this much of the bottom of the window looks down at them. A
 // wider window shows the whole keyboard and never changes view.
@@ -410,6 +417,7 @@ function start(crt) {
     cleanup.push(model.dispose);
     scene.add(model.root);
     scene.add(model.collider);
+    scene.add(model.lampCollider);
     props = dressProps(model, renderer.capabilities.getMaxAnisotropy());
     cleanup.push(props.dispose);
     scene.updateMatrixWorld(true);
@@ -418,8 +426,7 @@ function start(crt) {
     u.uRoom.value = model.reflect.texture;
     u.uRoomRange.value = model.reflect.range;
     u.uRoomScale.value = model.reflect.scale;
-    u.uAmbient.value.copy(model.reflect.light.color);
-    u.uAmbientDir.value.copy(model.reflect.light.direction);
+    applyLamp();
 
     var terminal = TERMINAL_PARTS.map(function (name) {
       return root.getObjectByName(name);
@@ -442,7 +449,7 @@ function start(crt) {
       }
     );
 
-    pickable = [face, model.collider].concat(model.meshes);
+    pickable = [face, model.collider, model.lampCollider].concat(model.meshes);
     model.setPowerLed(powerState === "on" || powerState === "warming");
     model.setButton(buttonPos);
     layout();
@@ -485,6 +492,61 @@ function start(crt) {
   // Push-push switch: latched in while the set is on. 0 = out, 1 = in.
   var buttonGoal = powerState === "on" ? 1 : 0;
   var buttonPos = buttonGoal;
+
+  // --- desk lamp -----------------------------------------------------------
+  // A push switch on the lamp base. Its light is a separate baked layer, so
+  // switching it only scales that layer; the glass's reflection and the
+  // room light on it are swapped for the lamp-off versions too.
+  var lampOn = true;
+  var lampLevel = 1;
+  // Pressed travel of the cap, 0..1, and how long since it was pressed.
+  var lampSwitchPos = 0;
+  var lampSwitchT = -1;
+
+  function applyLamp() {
+    var u = faceMat.uniforms;
+    var r = lampLevel >= 0.5 ? model.reflect : model.reflectOff;
+    u.uRoom.value = r.texture;
+    u.uRoomRange.value = r.range;
+    u.uRoomScale.value = r.scale;
+    u.uAmbient.value.copy(model.reflectOff.light.color).lerp(model.reflect.light.color, lampLevel);
+    u.uAmbientDir.value.copy(model.reflectOff.light.direction).lerp(model.reflect.light.direction, lampLevel).normalize();
+    model.setLamp(lampLevel);
+    if (props) props.setLamp(lampLevel);
+  }
+
+  function toggleLamp() {
+    lampOn = !lampOn;
+    lampSwitchT = 0;
+    wake(0.5);
+  }
+
+  // Returns true while anything is still moving.
+  function stepLamp(dt) {
+    var moving = false;
+    if (lampSwitchT >= 0) {
+      // Down quickly, back up a little slower: a click, not a latch.
+      lampSwitchT += dt;
+      var t = lampSwitchT / LAMP_SWITCH_PRESS_S;
+      lampSwitchPos = t < 0.4 ? t / 0.4 : Math.max(0, 1 - (t - 0.4) / 0.6);
+      if (t >= 1) {
+        lampSwitchT = -1;
+        lampSwitchPos = 0;
+      }
+      model.setLampSwitch(lampSwitchPos);
+      moving = true;
+    }
+    var goal = lampOn ? 1 : 0;
+    if (lampLevel !== goal) {
+      // A filament comes up faster than it cools.
+      var tau = lampOn ? LAMP_WARM_S : LAMP_COOL_S;
+      lampLevel += (goal - lampLevel) * (1 - Math.exp(-dt / tau));
+      if (Math.abs(goal - lampLevel) < 0.002) lampLevel = goal;
+      applyLamp();
+      moving = true;
+    }
+    return moving;
+  }
 
   function setPower(on) {
     if (!on) collapseGain = beamGain;
@@ -572,6 +634,7 @@ function start(crt) {
     if (!hits.length) return null;
     var obj = hits[0].object;
     if (obj === model.collider || obj === model.button) return { button: true };
+    if (obj === model.lampCollider || obj.name === "Lamp_Switch") return { lamp: true };
     if (obj.userData.code !== undefined) return { key: obj };
     if (obj === model.keyboard || obj.parent === model.keyboard) return { keyboard: true };
     if (obj !== face) return null;
@@ -637,7 +700,7 @@ function start(crt) {
       canvas.style.cursor = screenEl.classList.contains("xterm-cursor-pointer") ? "pointer" : "text";
     } else {
       leaveFace();
-      canvas.style.cursor = hit && (hit.button || hit.key) ? "pointer" : "default";
+      canvas.style.cursor = hit && (hit.button || hit.key || hit.lamp) ? "pointer" : "default";
     }
   });
   canvas.addEventListener("pointerleave", function (ev) {
@@ -675,6 +738,10 @@ function start(crt) {
     if (hit.key && ev.pointerType === "touch" && !wasDown && rig && rig.showsKeys()) return;
     if (hit.button) {
       crt.powerBtn.click();
+      return;
+    }
+    if (hit.lamp) {
+      toggleLamp();
       return;
     }
     if (hit.key) {
@@ -816,6 +883,7 @@ function start(crt) {
       model.setButton(buttonPos);
     }
     if (keys.step(dt)) moving = true;
+    if (stepLamp(dt)) moving = true;
     // Steam keeps drifting, so the scene keeps drawing while it shows.
     if (props.step(dt, camera)) moving = true;
     if (rig.step(dt, parallaxGoal.x, parallaxGoal.y, lookDown && rig.showsKeys())) moving = true;

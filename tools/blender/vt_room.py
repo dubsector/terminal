@@ -51,6 +51,11 @@ WIN_X0, WIN_X1, WIN_Z0, WIN_Z1 = -1.80, -0.80, 0.50, 1.62
 LAMP_POS = Vector((0.37, 0.27, 0.0))
 LAMP_HEAD_XY = Vector((0.305, 0.075))
 LAMP_WRIST_Z = 0.36
+# push switch on the base top, lamp-local (x toward the head, y lateral);
+# in front of the post and to the viewer's right of it
+LAMP_SWITCH_XY = (0.090, 0.030)
+LAMP_SWITCH_R = 0.0085
+LAMP_SWITCH_TRAVEL = 0.0035          # m, straight down when pressed
 # where the open end of the shade points, in world space
 SHADE_AIM = Vector((0.06, -0.20, -1.0)).normalized()
 _d = LAMP_HEAD_XY - LAMP_POS.xy
@@ -800,7 +805,15 @@ def _lamp(col):
     m.add(p_lathe(cyl_profile(0.085, 0.0, 0.022, 0.008, 3), 40), enamel, T(0.042, 0, 0))
     m.add(p_cyl(0.0095, 0.018, 0.070, 0.001, 14), enamel)
     m.add(p_cyl(0.014, -0.019, 0.019, 0.002, 18), enamel, T(*S) @ lat)
+    # bright ring the switch cap sits in, on the front-right of the base top
+    m.add(p_cyl(LAMP_SWITCH_R + 0.003, 0.0215, 0.0245, 0.0008, 24), steel, T(*LAMP_SWITCH_XY, 0))
     base = m.finish("Lamp_Base", col)
+
+    # push switch: its own object so the page can press it
+    m = Mesh()
+    m.add(p_cyl(LAMP_SWITCH_R, 0.0235, 0.0310, 0.0015, 24), plug_mat, T(*LAMP_SWITCH_XY, 0))
+    switch = m.finish("Lamp_Switch", col)
+    switch["travel"] = LAMP_SWITCH_TRAVEL
 
     # arm
     m = Mesh()
@@ -864,7 +877,7 @@ def _lamp(col):
     bulb["emissive"] = True
     bulb["emission_strength"] = BULB_STRENGTH
 
-    for o in (base, arm, shade, bulb):
+    for o in (base, switch, arm, shade, bulb):
         o.location = LAMP_POS
         o.rotation_euler = (0, 0, LAMP_ROT)
 
@@ -888,7 +901,7 @@ def _lamp(col):
     m.add(p_box((0.086, 0.008, 0.086), 0.002, 1), plug_mat, T(px, Y_WALL - 0.004, pz + 0.010))
     m.add(p_box((0.044, 0.032, 0.048), 0.005, 2), plug_mat, T(px, Y_WALL - 0.008 - 0.016, pz + 0.004))
     cord = m.finish("Lamp_Cord", col)
-    return [base, arm, shade, cord], bulb
+    return [base, switch, arm, shade, cord], bulb
 
 
 # ---------------------------------------------------------------- props
@@ -901,11 +914,11 @@ def _mug(col):
         prof.append((0.039 + 0.002 * math.cos(a), 0.0925 + 0.0025 * math.sin(a) + 0.0 * k))
     prof += [(0.037, 0.089), (0.037, 0.068), (0.0, 0.068)]
     seg_mats = [0] * (len(prof) - 2) + [1]
-    m = Mesh().add(p_lathe(prof, 36, seg_mats), [ceramic, coffee])
+    m = Mesh().add(p_lathe(prof, 72, seg_mats), [ceramic, coffee])
     path = catmull([(0.0385, 0, 0.076), (0.058, 0, 0.079), (0.070, 0, 0.066), (0.071, 0, 0.046),
                     (0.062, 0, 0.029), (0.0385, 0, 0.024)], 5)
     # strap handle: 8 mm thick, 16 mm wide
-    handle = p_tube(path, 0.004, 10)
+    handle = p_tube(path, 0.004, 16)
     bmesh.ops.scale(handle, vec=(1.0, 2.0, 1.0), verts=handle.verts)
     m.add(handle, ceramic)
     return m.finish("Mug", col, loc=(MUG_POS[0], MUG_POS[1], 0), rot_z=math.radians(-38))
