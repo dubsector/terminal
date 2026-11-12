@@ -31,6 +31,7 @@ import { loadModel, buildModel } from "./gl/model.js";
 import { drawLegends } from "./gl/legends.js";
 import { createKeys } from "./gl/keys.js";
 import { createRig } from "./gl/camera.js";
+import { dressProps } from "./gl/props.js";
 
 // Bezel opening (the visible part of the tube face), in scene units. A
 // 12-inch 4:3 tube shows roughly 244 x 183 mm, so one unit is about 61 mm.
@@ -387,6 +388,7 @@ function start(crt) {
   var model = null;
   var rig = null;
   var keys = null;
+  var props = null;
   var pickable = [];
   var ready = false;
 
@@ -408,6 +410,8 @@ function start(crt) {
     cleanup.push(model.dispose);
     scene.add(model.root);
     scene.add(model.collider);
+    props = dressProps(model, renderer.capabilities.getMaxAnisotropy());
+    cleanup.push(props.dispose);
     scene.updateMatrixWorld(true);
 
     var u = faceMat.uniforms;
@@ -445,7 +449,7 @@ function start(crt) {
 
     // Decode and upload the big textures now rather than in the first
     // visible frame.
-    [legends.keys, legends.strip, model.reflect.texture].forEach(function (t) {
+    [legends.keys, legends.strip, model.reflect.texture].concat(props.textures).forEach(function (t) {
       renderer.initTexture(t);
     });
     for (var name in loaded.maps) {
@@ -812,6 +816,8 @@ function start(crt) {
       model.setButton(buttonPos);
     }
     if (keys.step(dt)) moving = true;
+    // Steam keeps drifting, so the scene keeps drawing while it shows.
+    if (props.step(dt, camera)) moving = true;
     if (rig.step(dt, parallaxGoal.x, parallaxGoal.y, lookDown && rig.showsKeys())) moving = true;
     if (moving) wake(0.1);
 

@@ -301,6 +301,14 @@ export function buildModel(loaded, legends) {
     target: target,
     keyboard: keyboard,
     keys: keys,
+    // For extras drawn over the baked set (props.js): the light maps, the
+    // ranges they were stored with, and a material lit the same way.
+    maps: loaded.maps,
+    ranges: ranges,
+    makeBakedMaterial: function (maps, atlas, map) {
+      var r = ranges[atlas];
+      return bakedMaterial(maps, r.room, r.screen, screenLight, map || null);
+    },
     button: button,
     // Everything a ray can be stopped by.
     meshes: meshes,
