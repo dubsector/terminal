@@ -494,7 +494,7 @@ function start(crt) {
   var buttonPos = buttonGoal;
 
   // --- desk lamp -----------------------------------------------------------
-  // A push switch on the lamp base. Its light is a separate baked layer, so
+  // An inline rocker switch on the lamp cord. Its light is a separate baked layer, so
   // switching it only scales that layer; the glass's reflection and the
   // room light on it are swapped for the lamp-off versions too.
   var lampOn = true;

@@ -320,7 +320,7 @@ export function buildModel(loaded, legends) {
 
   var powerLed = need(leds.PowerLED, "PowerLED");
 
-  // Desk lamp switch: a cap on the lamp base that pushes straight down (the
+  // Desk lamp switch: the rocker on the cord switch, which dips straight down (the
   // room's down, which is not the tube's), with its own larger collider.
   var lampSwitch = node("Lamp_Switch");
   var lampSwitchRest = lampSwitch.position.clone();
