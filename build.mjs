@@ -14,6 +14,9 @@ if (existsSync("dist")) {
 cpSync("src/index.html", "dist/index.html");
 cpSync("src/style.css", "dist/style.css");
 cpSync("src/favicon.svg", "dist/favicon.svg");
+// The 3D view's model and baked maps (tools/blender/build_scene.py writes
+// them); fetched by scene.js at run time, not bundled.
+cpSync("src/assets", "dist/assets", { recursive: true });
 
 const options = {
   entryPoints: ["src/terminal.js", "src/scene.js"],
