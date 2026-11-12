@@ -14,8 +14,8 @@
     "three": "0.187.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1",
-    "wrangler": "^4.119.0"
+    "esbuild": "^0.28.2",
+    "wrangler": "^4.151.2"
   },
   "overrides": {
     "undici": "7.29.0"
