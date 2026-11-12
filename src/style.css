@@ -346,3 +346,35 @@ body.keyboard-open {
   box-shadow:inset 0 2px 3px #00000099, inset 0 -1px 1px #ffffff22;
   transform:scale(0.94);
 }
+
+/* WebGL view (default; src/scene.js). The canvas covers the page and the CSS
+   monitor underneath goes invisible - but it has to stay laid out and
+   inside the viewport: xterm stops rendering when its element isn't
+   intersecting the viewport, and the scene relays clicks to it by
+   position. So opacity, never display:none. */
+#glCanvas{
+  position:fixed;
+  inset:0;
+  width:100%;
+  height:100%;
+  display:block;
+  z-index:5;
+  touch-action:none;
+}
+body.gl-on .monitor{
+  opacity:0;
+  pointer-events:none;
+}
+/* .power-control opts back in to pointer events on the flat site; the 3D
+   switch clicks the real button itself. */
+body.gl-on .power-control{
+  pointer-events:none;
+}
+/* Nobody can see these while the canvas is up, so don't pay for them. */
+body.gl-on .crt::before,
+body.gl-on .crt-flicker{
+  animation:none;
+}
+body.gl-on #terminal{
+  filter:none;
+}

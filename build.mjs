@@ -1,17 +1,25 @@
 import { build, context } from "esbuild";
-import { cpSync, mkdirSync, existsSync, rmSync } from "fs";
+import { cpSync, mkdirSync, existsSync, readdirSync, rmSync } from "fs";
 
 const watch = process.argv.includes("--watch");
 
-if (existsSync("dist")) rmSync("dist", { recursive: true });
-mkdirSync("dist");
+// Empty dist/ rather than removing the directory itself: `wrangler dev`
+// holds a watch on it, and on Windows a watched directory can't be deleted.
+if (existsSync("dist")) {
+  for (const entry of readdirSync("dist")) rmSync(`dist/${entry}`, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+} else {
+  mkdirSync("dist");
+}
 
 cpSync("src/index.html", "dist/index.html");
 cpSync("src/style.css", "dist/style.css");
 cpSync("src/favicon.svg", "dist/favicon.svg");
+// The 3D view's model and baked maps (tools/blender/build_scene.py writes
+// them); fetched by scene.js at run time, not bundled.
+cpSync("src/assets", "dist/assets", { recursive: true });
 
 const options = {
-  entryPoints: ["src/terminal.js"],
+  entryPoints: ["src/terminal.js", "src/scene.js"],
   bundle: true,
   outdir: "dist",
   entryNames: "[name]",
