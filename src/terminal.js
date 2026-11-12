@@ -31,6 +31,28 @@ term.open(document.getElementById("terminal"));
 
 var terminalEl = document.getElementById("terminal");
 
+// The WebGL view (src/scene.js) is the default. In that mode this DOM
+// terminal is still the real one - it takes the keystrokes and runs the
+// shell - but it's invisible once the scene is up, and the scene redraws its
+// buffer on a modelled tube. A text display of the kind being modelled has a
+// fixed 80x25 character grid, so the terminal is pinned to that instead of
+// being fitted to the window. Until the scene is ready, and for good if it
+// can't run, this flat terminal is what the visitor sees.
+//
+// ?gl=0 always gives the flat site and ?gl=1 always tries the scene.
+// Otherwise visitors who ask for reduced motion (the view moves with the
+// pointer) or to save data (it downloads about 1.6 MB) get the flat site.
+var GL_MODE = (function () {
+  var q = window.location.search;
+  if (/[?&]gl=0(&|$)/.test(q)) return false;
+  if (/[?&]gl=1(&|$)/.test(q)) return true;
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var saveData = navigator.connection && navigator.connection.saveData;
+  return !reduceMotion && !saveData;
+})();
+var GL_COLS = 80;
+var GL_ROWS = 25;
+
 // FitAddon only ever adjusts cols/rows to whatever font size is already
 // set - it won't shrink the font itself. The CRT box is now responsive
 // (see .crt in style.css), so without this every viewport would get the
@@ -43,6 +65,10 @@ function resizeTerminal() {
   var fontSize = terminalEl.clientWidth / (targetCols * 0.6);
   fontSize = Math.max(8, Math.min(19, fontSize));
   term.options.fontSize = fontSize;
+  if (GL_MODE) {
+    if (term.cols !== GL_COLS || term.rows !== GL_ROWS) term.resize(GL_COLS, GL_ROWS);
+    return;
+  }
   fitAddon.fit();
 }
 
@@ -778,7 +804,13 @@ function buildMotd(visitorIp) {
     .concat([
       "",
       "0 updates can be applied immediately.",
-      "",
+    ])
+    // The whole boot - login banner, this MOTD, then the intro's cd and
+    // ls - is 26 lines with the two-column layout. On a 25-row screen (the
+    // fixed 80x25 of the WebGL view) that would scroll the banner off the
+    // top just as the intro finishes, so give up one blank line there.
+    .concat(wide && term.rows < 26 ? [] : [""])
+    .concat([
       "Last login: " + formatDate(lastLogin) + " from " + visitorIp,
       "You have mail.",
       "",
@@ -1111,6 +1143,32 @@ function runIntro() {
 }
 
 bootSequence(runIntro);
+
+// Hands the WebGL scene the few things it needs. The scene only observes
+// (the terminal buffer, the power classes) and clicks the real power
+// button; all state stays here. Loaded as a separate script so visitors who
+// don't ask for it never download three.js.
+if (GL_MODE) {
+  window.__crt = {
+    term: term,
+    crt: crtEl,
+    powerBtn: powerBtnEl,
+    isPowerOn: function () {
+      return powerOn;
+    },
+    // Called if the scene can't run (or stops running): drop the 80x25 pin
+    // so the flat terminal goes back to fitting its box.
+    release: function () {
+      GL_MODE = false;
+      resizeTerminal();
+    },
+  };
+  var sceneScript = document.createElement("script");
+  sceneScript.src = "./scene.js";
+  sceneScript.async = true;
+  sceneScript.onerror = window.__crt.release;
+  document.body.appendChild(sceneScript);
+}
 
 // Test hook: lets automated checks feed synthetic keystrokes without
 // needing real DOM key events.
