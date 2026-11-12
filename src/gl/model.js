@@ -12,7 +12,7 @@ import {
   Mesh,
   MeshBasicMaterial,
   SRGBColorSpace,
-  TextureLoader,
+  Texture,
   Vector3,
 } from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -25,40 +25,62 @@ var ATLASES = ["hero", "env"];
 var LED_ON = 0xb4d23a;
 var LED_OFF = 0x262b10;
 
+// How far an emissive surface's colour is eased from its light's hue toward
+// white (see the "emissive" role below).
+var EMISSIVE_TOWARD_WHITE = 0.35;
+
 // The power switch is small on a phone, so the area that takes the click is
 // this many times the size of the cap.
 var BUTTON_COLLIDER_SCALE = 2.6;
 
 // Starts every download at once. `promise` resolves with the parsed glTF
-// and the textures; dispose() frees whatever has arrived and whatever
-// arrives later, for a load that is abandoned half way.
+// and the textures; dispose() stops whatever is still downloading and frees
+// whatever has arrived, for a load that is abandoned half way (a visitor on
+// a link slow enough to hit the timeout should not go on paying for it).
 export function loadModel(base) {
   var textures = [];
   var cancelled = false;
+  var abort = new AbortController();
 
-  // The loaders reject with whatever the browser gave them (for an image,
-  // a bare error event), so say which file it was.
+  // Say which file it was, and keep what went wrong with it.
   function failed(file) {
-    return function () {
-      throw new Error("could not load " + file);
+    return function (err) {
+      var why = err && err.message ? err.message : "";
+      throw new Error("could not load " + file + (why ? ": " + why : ""));
     };
   }
 
+  function fetchFile(file, as) {
+    return fetch(base + file, { signal: abort.signal }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r[as]();
+    });
+  }
+
   function texture(file) {
-    return new TextureLoader().loadAsync(base + file).then(function (t) {
-      t.colorSpace = SRGBColorSpace;
-      // glTF texture coordinates have their origin at the top-left.
-      t.flipY = false;
-      // The atlases leave only a few texels between islands, so small mip
-      // levels would mix neighbours; none of these are minified much.
-      t.generateMipmaps = false;
-      t.minFilter = LinearFilter;
-      t.magFilter = LinearFilter;
-      t.wrapS = t.wrapT = ClampToEdgeWrapping;
-      if (cancelled) t.dispose();
-      else textures.push(t);
-      return t;
-    }, failed(file));
+    return fetchFile(file, "blob")
+      .then(function (blob) {
+        // Decoded off the main thread, as the image would be drawn: no
+        // flip (glTF texture coordinates start at the top-left) and no
+        // colour management, since the shader treats it as sRGB itself.
+        return createImageBitmap(blob, { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+      })
+      .then(function (bitmap) {
+        var t = new Texture(bitmap);
+        t.colorSpace = SRGBColorSpace;
+        t.flipY = false;
+        // The atlases leave only a few texels between islands, so small mip
+        // levels would mix neighbours; none of these are minified much.
+        t.generateMipmaps = false;
+        t.minFilter = LinearFilter;
+        t.magFilter = LinearFilter;
+        t.wrapS = t.wrapT = ClampToEdgeWrapping;
+        t.needsUpdate = true;
+        if (cancelled) t.dispose();
+        else textures.push(t);
+        return t;
+      })
+      .catch(failed(file));
   }
 
   function lightMap(file) {
@@ -70,7 +92,11 @@ export function loadModel(base) {
   }
 
   var jobs = [
-    new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(base + "scene.glb").catch(failed("scene.glb")),
+    fetchFile("scene.glb", "arrayBuffer")
+      .then(function (buf) {
+        return new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).parseAsync(buf, base);
+      })
+      .catch(failed("scene.glb")),
     texture("reflect.webp"),
   ];
   ATLASES.forEach(function (name) {
@@ -87,8 +113,10 @@ export function loadModel(base) {
     }),
     dispose: function () {
       cancelled = true;
+      abort.abort();
       textures.forEach(function (t) {
         t.dispose();
+        if (t.image && t.image.close) t.image.close();
       });
       textures.length = 0;
     },
@@ -207,8 +235,14 @@ export function buildModel(loaded, legends) {
     if (x.role === "led") {
       o.material = leds[o.name] = keep(new MeshBasicMaterial({ color: LED_OFF }));
     } else if (x.role === "emissive") {
-      var e = need(x.emissive, "emissive colour of " + o.name);
-      o.material = keep(new MeshBasicMaterial({ color: new Color(e[0], e[1], e[2]) }));
+      // Far brighter than the screen can show, so it is drawn at full
+      // brightness - but in the colour of its light (a warm bulb), not as
+      // white paper. Its radiance, scaled so the strongest channel is 1,
+      // then eased a little toward white the way an overexposed hot spot is.
+      var e = x.emissive_radiance || need(x.emissive, "emissive colour of " + o.name);
+      var peak = Math.max(e[0], e[1], e[2]) || 1;
+      var glow = new Color(e[0] / peak, e[1] / peak, e[2] / peak).lerp(new Color(1, 1, 1), EMISSIVE_TOWARD_WHITE);
+      o.material = keep(new MeshBasicMaterial({ color: glow }));
     } else if (x.role === "backing") {
       // The cabinet is hollow. This cap sits just behind the glass and keeps
       // the wall from showing through wherever the face mesh does not reach

@@ -23,19 +23,24 @@ var SEQUENCES = {
   ArrowDown: "\x1b[B",
   ArrowRight: "\x1b[C",
   ArrowLeft: "\x1b[D",
-  Home: "\x1b[H",
-  End: "\x1b[F",
-  Insert: "\x1b[2~",
-  Delete: "\x1b[3~",
-  PageUp: "\x1b[5~",
-  PageDown: "\x1b[6~",
+  // The editing block sends what its legends say, as a VT220 does. The
+  // codes are the modern keys in the same places (what the real keyboard
+  // dips), not what is printed on the caps.
+  Insert: "\x1b[1~", // Find
+  Home: "\x1b[2~", // Insert Here
+  PageUp: "\x1b[3~", // Remove
+  Delete: "\x1b[4~", // Select
+  End: "\x1b[5~", // Prev Screen
+  PageDown: "\x1b[6~", // Next Screen
   F6: "\x1b[17~",
   F7: "\x1b[18~",
   F8: "\x1b[19~",
   F9: "\x1b[20~",
   F10: "\x1b[21~",
-  F11: "\x1b[23~",
-  F12: "\x1b[24~",
+  // Labelled ESC, BS and LF on the strip above them.
+  F11: "\x1b",
+  F12: "\b",
+  F13: "\n",
 };
 
 function isShift(code) {
@@ -129,15 +134,21 @@ export function createKeys(nodes, type, onLock, wake) {
       if (data && stickyControl) data = withControl(data);
     } else if (data === " " && stickyControl) {
       data = withControl(data);
+    } else if (code === "Tab" && stickyShift) {
+      data = "\x1b[Z";
     }
     // Keys with no modern meaning only move.
     if (!data) return;
     // A sticky Shift or Ctrl applies to one keystroke.
+    unlatch();
+    type(data);
+  }
+
+  function unlatch() {
     stickyShift = stickyControl = false;
     latch(function (c) {
       return isShift(c) || isControl(c);
     }, false);
-    type(data);
   }
 
   return {
@@ -147,6 +158,9 @@ export function createKeys(nodes, type, onLock, wake) {
       var k = byCode[code];
       if (!k || k.held === down) return;
       k.held = down;
+      // A real keystroke is the one a sticky modifier was waiting for, and
+      // it never saw it, so let go rather than catch the one after.
+      if (down && !isShift(code) && !isControl(code) && (stickyShift || stickyControl)) unlatch();
       wake();
     },
     // From any event that can report it.

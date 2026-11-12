@@ -240,8 +240,8 @@ function start(crt) {
   if (!screenEl) throw new Error("xterm screen element not found");
 
   // Everything below that has to be undone if the scene stops registers
-  // how here, as it is created, so a failure part-way through setting up
-  // (or loading) leaves nothing behind.
+  // its undo step here as it is created, so a failure part-way through
+  // setting up (or loading) leaves nothing behind.
   var cleanup = [];
   teardown = function () {
     while (cleanup.length) {
@@ -850,7 +850,10 @@ function start(crt) {
     .then(function (loaded) {
       if (dead) return;
       modelLoaded(loaded);
-      return Promise.all([renderer.compileAsync(scene, camera), renderer.compileAsync(persistScene, persistCam)]);
+      // Only the main scene: the persistence pass draws into a render
+      // target, and three keys its program on that, so compiling it here
+      // (for the canvas) would only be thrown away on the first frame.
+      return renderer.compileAsync(scene, camera);
     })
     .then(function () {
       if (dead) return;
@@ -901,11 +904,18 @@ function start(crt) {
       }
       return toClient(new Vector3(x, y, z));
     },
-    // Centre of a modelled key, by KeyboardEvent.code, or null.
+    // Middle of a modelled key's top face, by KeyboardEvent.code, or null.
+    // (The node's origin is at the foot of the cap, which in a shallow view
+    // projects onto the key in front.)
     keyToClient: function (code) {
       if (!model) return null;
       for (var i = 0; i < model.keys.length; i++) {
-        if (model.keys[i].userData.code === code) return toClient(new Vector3().setFromMatrixPosition(model.keys[i].matrixWorld));
+        var k = model.keys[i];
+        if (k.userData.code !== code) continue;
+        if (!k.geometry.boundingBox) k.geometry.computeBoundingBox();
+        var b = k.geometry.boundingBox;
+        var top = new Vector3((b.min.x + b.max.x) / 2, b.max.y, (b.min.z + b.max.z) / 2);
+        return toClient(top.applyMatrix4(k.matrixWorld));
       }
       return null;
     },
@@ -946,8 +956,12 @@ function fallback(reason) {
   var c = document.getElementById("glCanvas");
   if (c && c.parentNode) c.parentNode.removeChild(c);
   if (teardown) {
+    // Let go of it as well, or its closure keeps the renderer, the model
+    // and the legend canvases alive for the rest of the visit.
+    var undo = teardown;
+    teardown = null;
     try {
-      teardown();
+      undo();
     } catch (e) {}
   }
   if (window.__crt && window.__crt.release) window.__crt.release();
