@@ -347,7 +347,7 @@ body.keyboard-open {
   transform:scale(0.94);
 }
 
-/* WebGL view (?gl=1, src/scene.js). The canvas covers the page and the CSS
+/* WebGL view (default; src/scene.js). The canvas covers the page and the CSS
    monitor underneath goes invisible - but it has to stay laid out and
    inside the viewport: xterm stops rendering when its element isn't
    intersecting the viewport, and the scene relays clicks to it by

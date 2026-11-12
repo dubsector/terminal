@@ -31,13 +31,25 @@ term.open(document.getElementById("terminal"));
 
 var terminalEl = document.getElementById("terminal");
 
-// Opt-in WebGL view (src/scene.js), prototype only: ?gl=1. In that mode this
-// DOM terminal is still the real one - it takes the keystrokes and runs the
-// shell - but it's invisible, and the scene redraws its buffer on a modelled
-// tube. A text display of the kind being modelled has a fixed 80x25
-// character grid, so the terminal is pinned to that instead of being fitted
-// to the window.
-var GL_MODE = /[?&]gl=1(&|$)/.test(window.location.search);
+// The WebGL view (src/scene.js) is the default. In that mode this DOM
+// terminal is still the real one - it takes the keystrokes and runs the
+// shell - but it's invisible once the scene is up, and the scene redraws its
+// buffer on a modelled tube. A text display of the kind being modelled has a
+// fixed 80x25 character grid, so the terminal is pinned to that instead of
+// being fitted to the window. Until the scene is ready, and for good if it
+// can't run, this flat terminal is what the visitor sees.
+//
+// ?gl=0 always gives the flat site and ?gl=1 always tries the scene.
+// Otherwise visitors who ask for reduced motion (the view moves with the
+// pointer) or to save data (it downloads about 1.6 MB) get the flat site.
+var GL_MODE = (function () {
+  var q = window.location.search;
+  if (/[?&]gl=0(&|$)/.test(q)) return false;
+  if (/[?&]gl=1(&|$)/.test(q)) return true;
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var saveData = navigator.connection && navigator.connection.saveData;
+  return !reduceMotion && !saveData;
+})();
 var GL_COLS = 80;
 var GL_ROWS = 25;
 

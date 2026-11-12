@@ -1,5 +1,5 @@
-// WebGL CRT prototype, loaded only with ?gl=1 (see the bottom of
-// terminal.js). The real xterm.js terminal keeps running, invisible, as the
+// WebGL CRT view, the default (see GL_MODE in terminal.js; ?gl=0 turns it
+// off). The real xterm.js terminal keeps running, invisible, as the
 // thing that takes keystrokes and owns the shell; this file redraws its
 // character buffer as a video signal on a modelled tube and relays pointer
 // events back to it. Nothing in here owns terminal state.
