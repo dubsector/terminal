@@ -2,7 +2,7 @@
 # Builds the root filesystem of the Linux machine that `reboot` starts in
 # the browser: Alpine Linux for 32-bit x86, which is what v86 emulates.
 #
-#     sudo tools/alpine/rootfs.sh <work dir> <links manifest> <out.tar>
+#     sudo tools/alpine/rootfs.sh <work dir> <out.tar>
 #
 # Needs root on x86-64 Linux, because the packages are installed by running
 # Alpine's own `apk` inside the new root (a chroot). GitHub's runners and WSL
@@ -21,8 +21,7 @@ PACKAGES="bash nano less htop tree file ncurses-terminfo-base"
 
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mkdir -p "$1" && cd "$1" && pwd)
-manifest=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
-out=$(cd "$(dirname "$3")" && pwd)/$(basename "$3")
+out=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 root=$work/rootfs
 
 tarball=alpine-minirootfs-$ALPINE-x86.tar.gz
@@ -81,14 +80,10 @@ trap - EXIT
   install -D -m 644 "$here/rootfs/$file" "$root/$file"
 done
 
-# The site's link folders, one line per file: path, a tab, its contents in
-# base64. They come as a list because their paths hold a colon, which the
-# file systems this may be prepared on can't all store.
-while IFS=$'\t' read -r path content; do
-  [ -n "$path" ] || continue
-  mkdir -p "$root/$(dirname "$path")"
-  printf %s "$content" | base64 -d > "$root/$path"
-done < "$manifest"
+# The site's own folder is left empty: src/linux.js fills it from
+# src/shell/links.json as the machine starts, so links change without a new
+# image.
+mkdir -p "$root/var/www/dubsector.dev"
 
 # Member names without a leading "./", which v86's tools would otherwise
 # take for a directory called ".".

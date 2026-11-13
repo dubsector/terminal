@@ -3,8 +3,8 @@
 
 // The site's content: each folder under SITE holds links out to somewhere
 // else. Adding a URL to links.json is all it takes for it to show up in
-// `ls`. It is a file of its own because the Linux image (tools/alpine) is
-// given the same folders.
+// `ls`, here and on the Linux machine `reboot` starts (src/linux.js lays
+// the same folders onto its disk as it boots).
 import LINKS from "./links.json";
 
 export var HOME = "/root";
