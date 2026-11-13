@@ -1,4 +1,4 @@
-import { Bash, getCommandNames } from "just-bash";
+import { Bash, defineCommand, getCommandNames } from "just-bash";
 import { HOME, SITE, seedFiles } from "./tree.js";
 import { NOT_A_TTY_FD, lsCommand } from "./ls.js";
 import { createMachine } from "./machine.js";
@@ -214,7 +214,33 @@ export function createSession(host) {
     parsed: false,
     sawExit: false,
     piped: false,
+    // "reboot" or "poweroff" once a command has asked for it.
+    power: null,
   };
+
+  // The commands that take the machine down. All they do here is say so:
+  // the terminal plays out the rest once the line has finished.
+  function power(name, decide) {
+    return defineCommand(name, function (args) {
+      session.power = decide(args);
+      return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
+    });
+  }
+  var powerCommands = [
+    power("reboot", function () {
+      return "reboot";
+    }),
+    power("poweroff", function () {
+      return "poweroff";
+    }),
+    power("halt", function () {
+      return "poweroff";
+    }),
+    power("shutdown", function (args) {
+      if (args.indexOf("-c") !== -1) return null;
+      return args.indexOf("-r") !== -1 || args.indexOf("--reboot") !== -1 ? "reboot" : "poweroff";
+    }),
+  ];
 
   var bash = new Bash({
     cwd: HOME,
@@ -242,7 +268,7 @@ export function createSession(host) {
       // would otherwise build up unseen for a long time before failing.
       maxOutputSize: 1024 * 1024,
     },
-    customCommands: [lsCommand].concat(commands.list),
+    customCommands: [lsCommand].concat(commands.list, powerCommands),
   });
   bash.registerTransformPlugin(createPlugin(session));
 
@@ -251,6 +277,7 @@ export function createSession(host) {
     session.top = true;
     session.parsed = false;
     session.piped = options.terminal === false;
+    session.power = null;
     // Private to just-bash, and the only way to make $? on this line be the
     // status of the last one. The version is pinned in package.json.
     if (bash.state) bash.state.lastExitCode = session.status;
@@ -301,7 +328,15 @@ export function createSession(host) {
     }
     stdout = inCharacter(stdout);
     stderr = inCharacter(stderr);
-    return { output: stdout + stderr, stdout: stdout, stderr: stderr, status: session.status, cwd: session.cwd, logout: logout };
+    return {
+      output: stdout + stderr,
+      stdout: stdout,
+      stderr: stderr,
+      status: session.status,
+      cwd: session.cwd,
+      logout: logout,
+      power: session.power,
+    };
   }
 
   // Lays out the rest of the disk and starts the shell the way login does.
@@ -389,5 +424,26 @@ export function createSession(host) {
     bash.fs.writeFileSync(path, content);
   }
 
-  return { home: HOME, run: run, complete: complete, incomplete: incomplete, interrupt: interrupt, write: write };
+  // A new login on the same machine: the disk is as it was left, and the
+  // shell starts from nothing, as it does after a reboot.
+  function relogin() {
+    ready = ready.then(function () {
+      session.cwd = HOME;
+      session.env = { HOSTNAME: host.hostname };
+      session.status = 0;
+      session.functions = {};
+      return execute(". ~/.bashrc", { cols: 80, rows: 25 });
+    });
+    return ready;
+  }
+
+  return {
+    home: HOME,
+    run: run,
+    complete: complete,
+    incomplete: incomplete,
+    interrupt: interrupt,
+    write: write,
+    relogin: relogin,
+  };
 }

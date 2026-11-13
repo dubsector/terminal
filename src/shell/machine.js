@@ -4,8 +4,9 @@
 //
 // host is what terminal.js knows before the shell exists - the names on the
 // login banner and the numbers it prints in the MOTD:
-//   { user, hostname, os: { name, version }, kernel,
+//   { user, hostname, os: { name, version }, kernel, linux,
 //     stats: { load, memoryPercent, diskPercent, diskGb, processes, address, bootedAt } }
+// `linux` says whether `reboot` has a real machine to start.
 
 var DAY = 86400000;
 var KERNEL_BUILD = "#15-Dubuntu SMP PREEMPT_DYNAMIC Fri Mar 20 10:14:32 UTC 2026";
@@ -196,6 +197,28 @@ export function createMachine(host) {
     "/proc/cpuinfo": cpuinfo(),
     "/proc/meminfo": meminfo(memory),
   };
+
+  // The mail the login banner mentions: a note pointing at the real Linux
+  // machine that `reboot` starts. Only there if this build has that machine.
+  if (host.linux) {
+    var sent = new Date(bootedAt - 6 * DAY);
+    var pad = function (n) {
+      return String(n).padStart(2, "0");
+    };
+    var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    var day = days[sent.getUTCDay()];
+    var month = months[sent.getUTCMonth()];
+    var time = pad(sent.getUTCHours()) + ":" + pad(sent.getUTCMinutes()) + ":" + pad(sent.getUTCSeconds());
+    files["/var/mail/" + host.user] =
+      "From dubsector@" + host.hostname + "  " + day + " " + month + " " + String(sent.getUTCDate()).padStart(2) + " " + time + " " + sent.getUTCFullYear() + "\n" +
+      "Return-Path: <dubsector@" + host.hostname + ">\n" +
+      "Date: " + day + ", " + sent.getUTCDate() + " " + month + " " + sent.getUTCFullYear() + " " + time + " +0000\n" +
+      "From: dubsector <dubsector@" + host.hostname + ">\n" +
+      "To: " + host.user + "@" + host.hostname + "\n" +
+      "Subject: hello\n\n" +
+      "Thanks for looking around. Type reboot if you want the real thing.\n\n";
+  }
 
   // Files whose contents move with the clock; written again before every
   // command.
