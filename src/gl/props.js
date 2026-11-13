@@ -102,7 +102,10 @@ function cleanRegion(atlasTex, uvMin, uvMax) {
   var img = atlasTex.image;
   var W = img.width;
   var H = img.height;
-  var PAD = 3;
+  // Reach of the clean-up, in texels: sized for a 2048 atlas, so it covers
+  // the same width of pencil stroke at any size.
+  var R = Math.max(1, Math.round((3 * W) / 2048));
+  var PAD = R;
   var x0 = Math.max(0, Math.floor(uvMin[0] * W) - PAD);
   var y0 = Math.max(0, Math.floor(uvMin[1] * H) - PAD);
   var x1 = Math.min(W, Math.ceil(uvMax[0] * W) + PAD);
@@ -122,7 +125,6 @@ function cleanRegion(atlasTex, uvMin, uvMax) {
   var iy0 = Math.ceil(uvMin[1] * H) - y0;
   var ix1 = Math.floor(uvMax[0] * W) - x0 - 1;
   var iy1 = Math.floor(uvMax[1] * H) - y0 - 1;
-  var R = 3;
   var s = src.data;
   for (var y = 0; y < h; y++) {
     for (var x = 0; x < w; x++) {
@@ -359,15 +361,27 @@ function mugSteam(mug, reducedMotion) {
 // `model` is what buildModel returned. Anything the file doesn't have (an
 // older bake without the binder, say) is quietly skipped.
 export function dressProps(model, maxAniso) {
-  var textures = [];
-  var materials = [];
-  var geometries = [];
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   var binder = model.root.getObjectByName("Binder");
-  if (binder && binder.isMesh && binder.userData.atlas) {
+  var label = null;
+  function dropLabel() {
+    if (!label) return;
+    binder.remove(label.mesh);
+    label.textures.forEach(function (t) {
+      t.dispose();
+    });
+    label.material.dispose();
+    label.mesh.geometry.dispose();
+    label = null;
+  }
+  // Its light is cut out of the model's light maps as they are now, so it
+  // is printed again whenever those are swapped for another size.
+  function printLabel() {
+    dropLabel();
+    if (!binder || !binder.isMesh || !binder.userData.atlas) return;
     var atlas = binder.userData.atlas;
-    var label = binderLabel(
+    label = binderLabel(
       binder,
       model.maps[atlas],
       model.ranges[atlas],
@@ -376,23 +390,19 @@ export function dressProps(model, maxAniso) {
       },
       maxAniso
     );
-    if (label) {
-      textures = textures.concat(label.textures);
-      materials.push(label.material);
-      geometries.push(label.mesh.geometry);
-    }
   }
+  printLabel();
 
   var steam = null;
   var mug = model.root.getObjectByName("Mug");
-  if (mug) {
-    steam = mugSteam(mug, reduce);
-    materials = materials.concat(steam.materials);
-    geometries.push(steam.geometry);
-  }
+  if (mug) steam = mugSteam(mug, reduce);
 
   return {
-    textures: textures,
+    // What to upload ahead of the first frame that draws them.
+    textures: function () {
+      return label ? label.textures : [];
+    },
+    relight: printLabel,
     step: function (dt, camera) {
       return steam ? steam.step(dt, camera) : false;
     },
@@ -400,15 +410,13 @@ export function dressProps(model, maxAniso) {
       if (steam) steam.setLamp(level);
     },
     dispose: function () {
-      textures.forEach(function (t) {
-        t.dispose();
-      });
-      materials.forEach(function (m) {
-        m.dispose();
-      });
-      geometries.forEach(function (g) {
-        g.dispose();
-      });
+      dropLabel();
+      if (steam) {
+        steam.materials.forEach(function (m) {
+          m.dispose();
+        });
+        steam.geometry.dispose();
+      }
     },
   };
 }

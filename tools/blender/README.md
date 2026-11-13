@@ -27,7 +27,8 @@ Objects are found by name; custom properties become glTF `extras`.
 | `TubeRef` | Empty at the centre of the glass opening. Local +X right, +Z up the face, -Y out of the screen. Scale `TUBE_UNIT` (0.06096), so its local space is the tube space of `src/scene.js`: opening is x ±2.0, z ±1.5; the glass apex is at local y = -0.05. The page moves the whole model so this empty sits at its origin. |
 | `PowerButton` | Front push switch. Property `travel` (m) along TubeRef local +Y when pressed in. |
 | `PowerLED` | Power lamp lens. The page recolours it; it is not in the baked maps. |
-| `Lamp_Switch` | Rocker of the inline switch on the desk lamp's cord (the switch body is part of `Lamp_Cord`). Property `travel` (m), straight down (room -Z) when pressed. Baked like any other part (env atlas); every face is kept. |
+| `Lamp_Switch` | Rocker of the inline switch on the desk lamp's cord. Its origin is on its pivot and it is modelled, and baked, level: half way between on and off. Properties `axis` (unit vector in the object's own space) and `angle_on`, `angle_off` (radians): turning it by `angle_on` about `axis` tips the half toward the plug down, which is the lamp switched on; `angle_off` tips it the other way. Env atlas; every face is kept. |
+| `Lamp_SwitchBody` | The switch's body and the two cord collars. Static; every face is kept, since the rocker uncovers a little of its well as it tips. |
 | `Key_<id>` | One per key. Properties: `code` (KeyboardEvent.code, or `VT_<Name>` for keys with no modern twin), `legend`, `legend2` (shifted/second line, may be empty), `cell` (index into the 16 x 8 legend atlas), `w`, `h` (cap size in key units), `tone` (`cream` or `taupe`), `travel` (m, along the keyboard's local -Z). Also `top_w`, `top_h` (m): the rectangle of the cap top that the atlas cell, inset 6%, is stretched over; draw the legend with the aspect `top_w / top_h`, not `w / h` (1u is 14.15 x 14.6 mm, 2u is 33.2 x 14.6 mm; for the L-shaped Return it is the bounding box). `stack` says what `legend2` is: `"shift"` (shifted glyph, drawn above `legend`), `"line"` (second line of a word legend) or `""`. The 20 function-row keys have an empty `legend` and carry `strip` (the text printed on the legend strip above them) and `strip_u` (0..1 position of the key's centre along `LegendStrip`). Side faces of a cap all use the UV point 90% across, 90% down the cell, which the page must leave blank. |
 | `Keyboard` | Keyboard case; parent of every `Key_*`, `LegendStrip`, `Kbd_*`. Rests on z = 0, front edge y = 0, rear y = +0.171 in its own space. |
 | `LegendStrip` | Grey label strip above the function row. `UVMap` spans 0..1 (u left to right, v = 0 at the edge nearest the keys in Blender, so v = 1 there after the glTF flip). Properties `x0`, `x1` (m, keyboard local x of its ends). Its grey and red rule are in the baked maps; the page may draw the label text over it. |
@@ -44,32 +45,42 @@ Anything with `role = "proxy"` is excluded from export.
 
 One run rebuilds the three modules, places the keyboard and its coiled cable,
 bakes the lighting and writes everything below into `src/assets/`. A full run
-is 2048 px with 1024 samples for the hero atlas and 4096 for the env atlas
-(about 34 minutes on the GPU this was written on; `--skip-bake --no-beauty`
-re-encodes and re-exports from the masters in about 2.5 minutes). Flags:
+is 4096 px with 256 samples for the hero atlas and 512 for the env atlas
+(about 20 minutes with `--preview` on the GPU this was written on, an RTX
+3070, of which the bake itself is 12; `--skip-bake --no-beauty` re-encodes
+and re-exports from the masters in about 5 minutes). Flags:
 
 | Flag | Meaning |
 |---|---|
-| `--samples N` | Bake samples per texel for the hero atlas (default 1024). |
-| `--env-samples N` | Same for the env atlas (default 4 x `--samples`; the wall near the lamp is grainy below that). |
+| `--size N` | Atlas size (default 4096). The maps are also written at half and a quarter of it. |
+| `--samples N` | Bake samples per texel for the hero atlas, in its lamp pass (default 1024 at 2048 and a quarter of that at 4096: a texel a quarter the size needs a quarter the samples for the same grain). The room and screen passes take half. |
+| `--env-samples N` | Same for the env atlas (default twice the hero's). |
 | `--reflect-samples N` | Samples of the reflection render (default 512). |
-| `--size N` | Atlas size (default 2048). |
 | `--skip-bake` | Reuse the EXR masters in `--bake-dir` (only valid while the lightmap layout is unchanged; the script checks). |
-| `--no-smooth` | Skip the grain filter on the baked maps. |
-| `--preview DIR` | Also render the check images: `beauty_*` (path traced ground truth), `baked_*` (only the shipped maps, as emission; magenta = a back face, i.e. a hole), `noglass_*` (the same with the glass hidden: the opening must be solid blue, which is `ScreenBacking`), `bakedhalf_*` (env atlas at half size), `atlas_*`. |
+| `--reuse-unchanged` | Bake only the atlases whose layout or sample counts differ from the masters in `--bake-dir`. A change to the lamp, say, leaves the hero atlas alone. |
+| `--no-smooth` | Skip the grain filter on the baked light. |
+| `--preview DIR` | Also render the check images: `beauty_*` (path traced ground truth), `baked_*` (only the shipped maps, as emission; magenta = a back face, i.e. a hole), `noglass_*` (the same with the glass hidden: the opening must be solid blue, which is `ScreenBacking`), `baked<N>_*` (the same views drawn with the smaller maps), `atlas_*`. |
 | `--preview-samples N`, `--no-beauty` | Quality of, or skip, the beauty renders. |
 | `--out DIR`, `--bake-dir DIR` | Asset directory (default `src/assets`) and where the EXR masters, `reflect_debug.png` and `report.json` go (default: system temp). |
 | `--no-export`, `--blend` | Stop before the glb; save `scene.blend` in the bake dir. |
 
-Quick look: `--samples 32 --size 1024 --no-beauty --preview <dir>` (about 3 minutes).
+Quick look: `--samples 32 --size 1024 --no-beauty --preview <dir> --out <scratch dir>`
+(about 2.5 minutes; without `--out` it overwrites the shipped assets).
+
+Two things keep the bake short. Each atlas is baked as one joined copy of its
+objects: Blender bakes selected objects one at a time and sets the whole
+image up again for each, which for the hundred-odd keys cost several times
+what the samples did. And the light is baked apart from the surface colour
+(see Lightmaps), so the grain filter can work on every surface and far fewer
+samples are needed.
 
 ### Outputs
 
 | File | Content |
 |---|---|
 | `scene.glb` | Geometry only, one plain material, no images. `EXT_meshopt_compression` (required). Every mesh has `TEXCOORD_0` (`UVMap`, meaningful on keys and `LegendStrip` only) and `TEXCOORD_1` (`Lightmap`). |
-| `lm_hero_room.webp`, `lm_hero_lamp.webp`, `lm_hero_screen.webp` | Atlas "hero": terminal, keyboard case, keys, strip, cable. |
-| `lm_env_room.webp`, `lm_env_lamp.webp`, `lm_env_screen.webp` | Atlas "env": desk, desk wall, left wall, floor, skirting, props, lamp. |
+| `lm_hero_room_<N>.webp`, `lm_hero_lamp_<N>.webp`, `lm_hero_screen_<N>.webp` | Atlas "hero": terminal, keyboard case, keys, strip, cable. `<N>` is the atlas size: each map is written at `--size` and at half and a quarter of it (4096, 2048, 1024), the same texels averaged, on the same UVs and with the same range. The page draws its first frame with the smallest and then swaps in the largest the device can afford. |
+| `lm_env_room_<N>.webp`, `lm_env_lamp_<N>.webp`, `lm_env_screen_<N>.webp` | Atlas "env": desk, desk wall, left wall, floor, skirting, props, lamp. |
 | `reflect.webp`, `reflect_off.webp` | 512 px view out of the screen, for the glass reflection: desk lamp on, and off. |
 
 Faces no visitor's camera can see (tested from a set of eye positions around
@@ -91,8 +102,11 @@ wall is exported (a low, wide framing from the right catches it).
 ### Lightmaps
 
 The three maps of an atlas share the same texels. They hold outgoing radiance
-with the surface colour already multiplied in (Cycles diffuse direct +
-indirect + colour), stored as 8-bit sRGB of `radiance / range`. "room" is
+with the surface colour already multiplied in, stored as 8-bit sRGB of
+`radiance / range`. The bake keeps the two apart until then: Cycles diffuse
+direct + indirect for the light of each pass, and one diffuse colour bake
+per atlas, multiplied together after the light has been filtered (the
+product is the combined bake to within 0.2%). "room" is
 lit by the window and the dusk sky, "lamp" by the desk lamp alone, "screen"
 by the picture alone; light adds, so
 
@@ -117,28 +131,34 @@ percentile (nothing clips), otherwise the 99.9th percentile. One exception:
 the inside of `Lamp_Shade`, a few centimetres from the bulb and ten times
 brighter than anything else, is left out when the ranges are chosen.
 Its faces above the range are moved to `Lamp_ShadeGlow` (unlit, see above);
-the rim of faces next to them clips (0.16% of that map). Last build: room
-0.9445 (hero) and 0.8202 (env), screen 0.1662 (hero) and 0.03019 (env),
-reflect 1.0; nothing but the lamp shade clips. Read them from the scene
+the rim of faces next to them clips (0.3% of that map). A range chosen by
+percentile is also raised to cover the 99.995th percentile, up to 1.0 (all
+the screen can show): the lamp switch's pale rocker sits right under the
+bulb and is too few texels to move the 99.9th. Last build: room 0.2913
+(hero) and 0.3307 (env), lamp 0.9434 (hero) and 1.004 (env), screen 0.1714
+(hero) and 0.03096 (env), reflect 1.0; nothing clips but the lamp shade and
+the top of the rocker, which is past white anyway. Read them from the scene
 extras, not from here.
 
-Before encoding, bake grain is removed with a small Gaussian (1 texel sigma
-on keys, terminal, keyboard case, cable, lamp; 1.5 on desk body and
-skirting; 2.5 on the walls and floor), normalised per object so nothing
-bleeds between objects. Surfaces with printed or grained colour (desk top,
-nameplate, wall note, props) are not filtered. `--no-smooth` turns it off.
+Before the colour is multiplied in, grain is removed from the baked light
+with a small Gaussian. Its sigma is in texels of a 2048 atlas and scales
+with `--size`, so it covers the same patch of surface: 1 on keys, terminal,
+keyboard case, cable, lamp; 1.5 on desk body and skirting; 3 on the walls
+and floor; 0.5 on everything else (desk top, nameplate, wall note, props).
+It is weighted by the texel mask of the objects that share a sigma, and no
+island is nearer than its reach to another, so nothing bleeds between
+objects. Printed and grained colour is untouched: it is not in the light.
+`--no-smooth` turns the filter off.
 
-Islands are at least 10 px apart at 2048 and colour is grown 12 px into the
-gaps (neighbours meet half way, so each island has 5 px of its own colour
-round it). Mip levels 0 to 2 are safe; do not sample smaller mips (clamp the
-LOD or use `LinearFilter`).
+Islands are at least 10 px apart at 2048 (20 at 4096) and colour is grown
+12 px (24) into the gaps (neighbours meet half way, so each island has 5 px
+of its own colour round it). The page does not use mip maps on these.
 
-A half-size (1024) env atlas was tested against the full one in the baked
-look: about 0.6 sRGB codes mean difference from the seat, but the desk's wood
-grain and the notepad's writing are visibly softer in the look-down and
-desk close-ups, so 2048 ships. `lm_env_room_half.webp` and
-`lm_env_screen_half.webp` in the bake directory are that variant (same UVs
-and ranges) if a low-memory fallback is wanted.
+The smaller sizes were compared with the full one in the baked look, in sRGB
+codes, mean of the three channels: 2048 differs by about 0.4 from the seat,
+0.7 looking down at the keys and 1.2 in the desk close-up; 1024 by about
+0.7, 1.1 and 2.1. The desk's wood grain and the notepad's writing are
+visibly softer at 1024, which is why it is only the first thing drawn.
 
 ### Scene extras (glTF `scenes[0].extras`)
 
@@ -149,7 +169,8 @@ and ranges) if a low-memory fallback is wanted.
 | `lamp_range_hero`, `lamp_range_env` | Range of the two lamp maps. |
 | `reflect_range`, `reflect_range_off` | Range of `reflect.webp` and `reflect_off.webp`. |
 | `tube_unit` | Metres per tube unit (0.06096), the scale of `TubeRef`. |
-| `lightmap_size` | Atlas size in pixels. |
+| `lightmap_size` | Size in pixels of the largest atlas. |
+| `lightmap_sizes` | Every size the maps were written in, smallest first. |
 | `picture_scale` | `[0.88, 0.84]`, the lit part of the opening used for the screen bake. |
 | `reflect_fov_deg` | 90. |
 | `glass_light` | Linear RGB radiance a matt white surface at the glass apex would have (irradiance / pi), integrated over the full hemisphere from a 180 degree fisheye render with the glass hidden. Lights the unlit phosphor. |
@@ -197,4 +218,7 @@ loaded scene:
   Rays more than 45 degrees off the axis fall outside the image: clamp.
 - `Key_*` `travel` is along the `Keyboard` node's local **-Y**.
 - `PowerButton` `travel` is along TubeRef local **-Z** (into the cabinet).
+- `Lamp_Switch` `axis` is stored in Blender axes: `(x, y, z)` there is
+  `(x, z, -y)` in the node's local space. As built it is `(0, 1, 0)`, so the
+  node turns about its local **-Z**.
 - `LegendStrip` `x0`, `x1` are along the `Keyboard` node's local X (unchanged).

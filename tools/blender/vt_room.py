@@ -55,7 +55,8 @@ LAMP_WRIST_Z = 0.36
 # to the right of the base (world x, y of its two ends, where the cord goes in)
 CORD_SWITCH_A = (0.335, 0.097)
 CORD_SWITCH_B = (0.397, 0.080)
-CORD_SWITCH_TRAVEL = 0.0015         # m, rocker dips straight down when pressed
+CORD_SWITCH_THROW = 11.0            # degrees the rocker tips either side of level
+CORD_SWITCH_PIVOT_Z = 0.017         # m, the rocker's pivot: level with the top of the switch body
 # where the open end of the shade points, in world space
 SHADE_AIM = Vector((0.06, -0.20, -1.0)).normalized()
 _d = LAMP_HEAD_XY - LAMP_POS.xy
@@ -243,6 +244,34 @@ def p_tube(points, radius, sides=8, caps=True):
     if caps:
         bm.faces.new(list(reversed(rings[0])))
         bm.faces.new(rings[-1])
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return bm
+
+
+def rrect(hx, hy, r, n=4):
+    """Outline of a rounded rectangle in XY, counter-clockwise, n segments
+    per corner: always 4 * (n + 1) points, corner for corner."""
+    r = max(min(r, hx, hy), 1e-5)
+    pts = []
+    for cx, cy, a0 in ((hx - r, hy - r, 0), (r - hx, hy - r, 90), (r - hx, r - hy, 180), (hx - r, r - hy, 270)):
+        for k in range(n + 1):
+            a = math.radians(a0 + 90 * k / n)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return pts
+
+
+def p_loft(rings):
+    """Closed skin over consecutive rings (each the same number of 3D points),
+    capped at both ends."""
+    bm = bmesh.new()
+    vs = [[bm.verts.new(p) for p in ring] for ring in rings]
+    n = len(vs[0])
+    for a, b in zip(vs, vs[1:]):
+        for j in range(n):
+            k = (j + 1) % n
+            bm.faces.new((a[j], a[k], b[k], b[j]))
+    bm.faces.new(list(reversed(vs[0])))
+    bm.faces.new(vs[-1])
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     return bm
 
@@ -881,36 +910,102 @@ def _lamp(col):
     yg = Y_WALL - 0.009            # in the 20 mm gap behind the desk
     ys = Y_WALL - 0.016 - rc - 0.002   # just clear of the skirting face
     px, pz = 0.958, Z_FLOOR + 0.29
-    # Out of the front-right of the base, through the inline switch, round
-    # the right of the base and back to the rear edge of the desk.
-    sa, sb = Vector((*CORD_SWITCH_A, zd)), Vector((*CORD_SWITCH_B, zd))
+    # Out of the front-right of the base, into the inline switch, out of its
+    # far end, round the right of the base and back to the rear edge of the
+    # desk. The switch holds the cord a little off the desk at both ends.
+    zs = 0.0062
+    sa, sb = Vector((*CORD_SWITCH_A, zs)), Vector((*CORD_SWITCH_B, zs))
     sd = (sb - sa).normalized()
     c0 = Vector((0.334, 0.153, 0.0045))
-    path = catmull([c0, (0.320, 0.124, zd), sa - sd * 0.012, sa, sb, sb + sd * 0.016,
-                    (0.440, 0.082, zd), (0.470, 0.100, zd), (0.488, 0.150, zd), (0.500, 0.220, zd), (0.508, 0.300, zd),
-                    (0.522, 0.390, zd), (0.535, 0.4445, zd), (0.547, 0.4545, zd), (0.556, yg, -0.007),
-                    (0.559, yg, -0.035), (0.560, yg, -0.15), (0.560, yg, -0.35), (0.560, yg, -0.52),
-                    (0.561, yg - 0.003, -0.585), (0.563, ys, -0.625), (0.565, ys, -0.68),
-                    (0.572, ys, zf + 0.012), (0.592, ys, zf), (0.66, ys, zf), (0.78, ys - 0.003, zf),
-                    (0.90, ys, zf), (0.938, ys, zf), (0.953, ys, zf + 0.012), (px, ys, zf + 0.045),
-                    (px, ys, zf + 0.13), (px, ys, pz - 0.03), (px, ys, pz - 0.015)], 4)
-    m = Mesh().add(p_tube(path, rc, 6), cord_mat)
+    per = 4
+    ctrl = [c0, (0.320, 0.124, zd), sa - sd * 0.012, sa, sb, sb + sd * 0.016,
+            (0.440, 0.082, zd), (0.470, 0.100, zd), (0.488, 0.150, zd), (0.500, 0.220, zd), (0.508, 0.300, zd),
+            (0.522, 0.390, zd), (0.535, 0.4445, zd), (0.547, 0.4545, zd), (0.556, yg, -0.007),
+            (0.559, yg, -0.035), (0.560, yg, -0.15), (0.560, yg, -0.35), (0.560, yg, -0.52),
+            (0.561, yg - 0.003, -0.585), (0.563, ys, -0.625), (0.565, ys, -0.68),
+            (0.572, ys, zf + 0.012), (0.592, ys, zf), (0.66, ys, zf), (0.78, ys - 0.003, zf),
+            (0.90, ys, zf), (0.938, ys, zf), (0.953, ys, zf + 0.012), (px, ys, zf + 0.045),
+            (px, ys, zf + 0.13), (px, ys, pz - 0.03), (px, ys, pz - 0.015)]
+    path = catmull(ctrl, per)
+    # the cord stops a quarter of the way into each end of the switch body
+    # (sa and sb are control points 3 and 4) instead of running under the rocker
+    m = Mesh().add(p_tube(path[:3 * per + 2], rc, 6), cord_mat)
+    m.add(p_tube(path[4 * per - 1:], rc, 6), cord_mat)
     m.add(p_box((0.086, 0.008, 0.086), 0.002, 1), plug_mat, T(px, Y_WALL - 0.004, pz + 0.010))
     m.add(p_box((0.044, 0.032, 0.048), 0.005, 2), plug_mat, T(px, Y_WALL - 0.008 - 0.016, pz + 0.004))
-    # the inline switch body: a rounded black box the cord runs through
-    mid = (sa + sb) / 2
-    ang = math.degrees(math.atan2(sd.y, sd.x))
-    m.add(p_box((0.062, 0.026, 0.017), 0.0045, 3), knob, T(mid.x, mid.y, 0.0085) @ R(ang, "Z"))
     cord = m.finish("Lamp_Cord", col)
 
-    # its rocker, a separate object so the page can press it; tipped toward
-    # the cord's far end, the way a rocker sits when it is on
-    m = Mesh()
-    m.add(p_box((0.024, 0.016, 0.006), 0.002, 2), plug_mat,
-          T(mid.x, mid.y, 0.0172) @ R(ang, "Z") @ R(7, "Y"))
-    switch = m.finish("Lamp_Switch", col)
-    switch["travel"] = CORD_SWITCH_TRAVEL
-    return [base, switch, arm, shade, cord], bulb
+    body, switch = _cord_switch(col, (sa + sb) / 2, math.atan2(sd.y, sd.x), (sb - sa).length, zs,
+                                knob, plug_mat)
+    return [base, body, switch, arm, shade, cord], bulb
+
+
+def _cord_switch(col, mid, yaw, length, cord_z, body_mat, rocker_mat):
+    """Inline rocker switch on the lamp cord. Local +X runs along the cord
+    toward the plug, +Z is up. Returns (body, rocker); the rocker's origin is
+    on its pivot and it is built level, half way between on and off."""
+    mm = 0.001
+    hx, hy, top = length / 2, 14.0 * mm, 17.0 * mm
+    zp = CORD_SWITCH_PIVOT_Z
+    throw = math.radians(CORD_SWITCH_THROW)
+    arc_r = 13.2 * mm                   # the rocker's ends are arcs about the pivot,
+    gap = 0.5 * mm                      # so this gap to the well stays the same as it tips
+    well_x = arc_r + gap
+    rock_y = 7.0 * mm
+    well_y = rock_y + gap
+    well_floor = 10.5 * mm
+    n = 5
+
+    def outline(inset, z):
+        return [(x, y, z) for x, y in rrect(hx - inset, hy - inset, 8.0 * mm - inset, n)]
+
+    # soap-bar shell from the desk up, then in across the top to the rim of
+    # the rocker's well and down to its floor
+    rings = [outline(i * mm, z * mm) for z, i in (
+        (0.0, 2.2), (0.4, 1.0), (1.2, 0.3), (2.4, 0.0), (13.6, 0.0), (15.2, 0.4), (16.3, 1.3), (16.85, 2.4),
+        (17.0, 3.4))]
+    for z in (top, well_floor):
+        rings.append([(x, y, z) for x, y in rrect(well_x, well_y, 1.0 * mm, n)])
+    m = Mesh().add(p_loft(rings), body_mat)
+    # ribbed strain relief where the cord goes in at each end
+    collar = [(0.0, 0.0), (4.7, 0.0), (4.7, 3.6), (4.2, 3.9), (4.2, 4.6), (4.5, 4.9), (4.5, 6.4), (4.0, 6.7),
+              (4.0, 7.4), (4.2, 7.7), (4.2, 9.2), (3.8, 9.6), (3.8, 11.0), (0.0, 11.0)]
+    collar = [(r * mm, z * mm) for r, z in collar]
+    for sx in (-1, 1):
+        m.add(p_lathe(collar, 14), body_mat, T(sx * (hx - 2.0 * mm), 0, cord_z) @ orient((sx, 0, 0)))
+    body = m.finish("Lamp_SwitchBody", col, loc=(mid.x, mid.y, 0.0), rot_z=yaw)
+
+    # rocker, side on: a shallow V on top (each half lies level when it is the
+    # one pressed down), arcs at the ends, flat underneath
+    z0 = top + 0.6 * mm - zp            # the valley of the V, above the pivot
+    phi_t = throw + math.asin(z0 * math.cos(throw) / arc_r)
+    phi_b = math.radians(12.0)
+    prof = [(0.0, z0 + 0.12 * mm)]
+    for sx in (-1, 1):
+        side = [(sx * 1.2 * mm, z0 + 1.2 * mm * math.tan(throw))]
+        xt = arc_r * math.cos(phi_t) - 0.5 * mm
+        side.append((sx * xt, z0 + xt * math.tan(throw)))
+        for k in range(7):
+            a = phi_t - math.radians(2.5) - (phi_t - math.radians(2.5) + phi_b) * k / 6
+            side.append((sx * arc_r * math.cos(a), arc_r * math.sin(a)))
+        prof = side[::-1] + prof if sx < 0 else prof + side
+    zc = 1.0 * mm                       # the side edges are eased toward this height
+    rings = []
+    for y, inset in ((-1.0, 0.5), (-0.94, 0.15), (-0.86, 0.0), (0.86, 0.0), (0.94, 0.15), (1.0, 0.5)):
+        s = 1.0 - inset * mm / arc_r
+        rings.append([(x * s, y * rock_y, zc + (z - zc) * s) for x, z in prof])
+    m = Mesh().add(p_loft(rings), rocker_mat)
+    # moulded bar on the half that is down when the lamp is on
+    xm = 6.5 * mm
+    m.add(p_box((1.3 * mm, 7.0 * mm, 0.3 * mm)), _mat("LampSwitchMark", "#2b2a28", 0.5),
+          T(xm, 0, z0 + xm * math.tan(throw) + 0.05 * mm) @ R(-CORD_SWITCH_THROW, "Y"))
+    switch = m.finish("Lamp_Switch", col, loc=(mid.x, mid.y, zp), rot_z=yaw)
+    # Tipping it by angle_on about `axis` (object space, Blender axes) puts
+    # the +X half down: the lamp is on. angle_off is the other way.
+    switch["axis"] = [0.0, 1.0, 0.0]
+    switch["angle_on"] = throw
+    switch["angle_off"] = -throw
+    return body, switch
 
 
 # ---------------------------------------------------------------- props
@@ -1282,6 +1377,17 @@ def main():
             "cord": ((1.45, -0.75, -0.25), (0.80, 0.45, -0.55), 35.0),
         }
         _render(scene, out_dir, {k: v for k, v in views.items() if want(k)}, samples)
+        if want("switch"):
+            # the cord switch level (as baked), then tipped on and off
+            rocker = bpy.data.objects["Lamp_Switch"]
+            yaw = rocker.rotation_euler.z
+            close = ((0.33, -0.13, 0.15), (0.366, 0.088, 0.012), 85.0)
+            for tag, a in (("level", 0.0), ("on", rocker["angle_on"]), ("off", rocker["angle_off"])):
+                rocker.rotation_euler = (0.0, a, yaw)
+                _render(scene, out_dir, {"switch_" + tag: close}, samples)
+                if tag == "on":
+                    _render(scene, out_dir, {"switch_seat": (CAM_SEAT, (0.366, 0.088, 0.012), 120.0)}, samples)
+            rocker.rotation_euler = (0.0, 0.0, yaw)
         if want("desk_texture"):
             # no denoiser: it smears exactly the grain this view is meant to judge
             _render(scene, out_dir, {"desk_texture": ((-0.05, -0.55, 0.50), (0.05, -0.33, 0.0), 50.0)},

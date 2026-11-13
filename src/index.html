@@ -4,8 +4,28 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>dubsector.dev</title>
-  <link rel='stylesheet' href='https://fonts.googleapis.com/css?family=Roboto:400,300,700,100|Montserrat:400,700|Catamaran:400,100'>
-  <link rel='stylesheet' href='https://maxcdn.bootstrapcdn.com/font-awesome/4.6.1/css/font-awesome.min.css'>
+  <script>
+    // Start the 3D view's downloads now, not when terminal.js and then
+    // scene.js get round to asking. The test is GL_MODE's in terminal.js;
+    // build.mjs fills in the list. Ahead of the style sheets, which would
+    // otherwise hold this script up until they have loaded.
+    (function () {
+      var q = location.search;
+      if (/[?&]gl=0(&|$)/.test(q)) return;
+      if (!/[?&]gl=1(&|$)/.test(q)) {
+        if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        if (navigator.connection && navigator.connection.saveData) return;
+      }
+      /*PRELOAD*/[].forEach(function (p) {
+        var link = document.createElement("link");
+        link.rel = "preload";
+        link.as = p.as;
+        if (p.as === "fetch") link.crossOrigin = "anonymous";
+        link.href = p.href;
+        document.head.appendChild(link);
+      });
+    })();
+  </script>
   <link rel="stylesheet" href="./terminal.css">
   <link rel="stylesheet" href="./style.css">
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
