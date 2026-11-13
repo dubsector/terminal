@@ -105,6 +105,12 @@ body.keyboard-open {
 #terminal .xterm-screen{
   background-color:transparent;
 }
+/* xterm draws terminal hyperlinks (what `ls` prints for directories and
+   URLs) with a dashed underline; these are meant to read as plain
+   underlined names. */
+#terminal .xterm-underline-5{
+  text-decoration:underline;
+}
 .crt::before,.crt::after{
   content:'';
   position:absolute;

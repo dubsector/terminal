@@ -7,6 +7,7 @@ initAnalytics();
 
 var HOSTNAME = "websvr";
 var USER = "root";
+var HOME = "/root";
 var OS_NAME = "Dubuntu";
 var OS_VERSION = "26.04.1 LTS";
 var KERNEL_VERSION = "6.14.0-15-generic";
@@ -22,6 +23,23 @@ var term = new Terminal({
     background: "#00100000",
     foreground: "#30f030",
     cursor: "#30f030",
+  },
+  // `ls` prints directories and URLs as terminal hyperlinks (see
+  // src/shell/ls.js), and xterm hands a click on one to this. A URL opens
+  // in a new tab; a directory is a "cd:" link, which only means something
+  // here, hence allowNonHttpProtocols.
+  linkHandler: {
+    allowNonHttpProtocols: true,
+    activate: function (event, uri) {
+      if (/^https?:\/\//.test(uri)) {
+        trackLink(uri);
+        window.open(uri, "_blank", "noopener,noreferrer");
+      } else if (uri.indexOf("cd:") === 0 && canNavigate()) {
+        var target = decodeURI(uri.slice(3));
+        trackClick(baseName(target));
+        navigateTo(target);
+      }
+    },
   },
 });
 
@@ -212,7 +230,39 @@ var visitorIpPromise = new Promise(function (resolve) {
     });
 });
 
-var cwd = "~";
+// The shell: a bash interpreter and the disk it works on (src/shell.js).
+// xterm.js only emulates a terminal - it draws characters and reports
+// keystrokes - so this is what actually runs what a visitor types. It is a
+// separate script because it is several times the size of everything else
+// here; the login animation covers the time it takes to arrive. Resolves to
+// null if it can't be loaded.
+var shellReady = new Promise(function (resolve) {
+  var script = document.createElement("script");
+  script.src = "./shell.js";
+  script.async = true;
+  script.onload = function () {
+    resolve(
+      window.__createShell
+        ? window.__createShell({ user: USER, hostname: HOSTNAME, cmatrix: startMatrix })
+        : null
+    );
+  };
+  script.onerror = function () {
+    resolve(null);
+  };
+  document.body.appendChild(script);
+});
+
+// The shell's working directory, as of the last command to finish. The
+// shell owns it; this copy is for the prompt and for working out where a
+// clicked link leads.
+var cwd = HOME;
+
+// Set while a command is in the foreground: the AbortController that
+// Ctrl+C trips. Keys typed meanwhile go nowhere, as there is no line being
+// edited to put them in.
+var running = null;
+
 var inputBuffer = "";
 // Index into inputBuffer where the next typed character lands - xterm.js
 // only renders/tracks its own screen cursor, it has no idea what "the
@@ -239,19 +289,17 @@ function setInputLine(text) {
   term.write(text);
 }
 
+// The path the way bash's default prompt shows it: the home directory, and
+// anything under it, as "~".
+function promptPath() {
+  if (cwd === HOME) return "~";
+  if (cwd.indexOf(HOME + "/") === 0) return "~" + cwd.slice(HOME.length);
+  return cwd;
+}
+
 function promptString() {
-  return USER + "@" + HOSTNAME + ":" + cwd + "# ";
+  return USER + "@" + HOSTNAME + ":" + promptPath() + "# ";
 }
-
-function writePrompt() {
-  term.write("\r\n" + promptString());
-}
-
-// Clickable directory names in `ls` output. Each entry pins an exact
-// (line, column) range in the buffer to the directory name that was
-// printed there, so the link provider below can look up "what did the
-// visitor click" without re-parsing rendered text.
-var dirLinks = [];
 
 // True while a clicked link's "cd" + "ls -a" replay is mid-animation.
 // disableStdin only blocks keyboard input, not further link clicks, so
@@ -261,62 +309,47 @@ var dirLinks = [];
 // one is already in flight, rather than queued.
 var navigating = false;
 
-term.registerLinkProvider({
-  provideLinks: function (bufferLineNumber, callback) {
-    var matches = dirLinks.filter(function (l) {
-      return l.line === bufferLineNumber;
-    });
-    if (!matches.length) {
-      callback(undefined);
-      return;
-    }
-    callback(
-      matches.map(function (l) {
-        return {
-          text: l.name,
-          range: {
-            start: { x: l.startCol, y: bufferLineNumber },
-            end: { x: l.endCol, y: bufferLineNumber },
-          },
-          activate: function () {
-            if (l.url) {
-              trackLink(l.url);
-              window.open(l.url, "_blank", "noopener,noreferrer");
-            } else if (!navigating) {
-              trackClick(l.name);
-              navigateTo(l.name, l.origin);
-            }
-          },
-        };
-      })
-    );
-  },
-});
+// A directory link can only be followed from an idle prompt: not mid-
+// replay, not while a command (cmatrix included) has the terminal, and not
+// from the login screen, where links left in the scrollback mean nothing.
+function canNavigate() {
+  return !navigating && !running && !loginMode && !banned;
+}
 
 function clearInputLine() {
   setInputLine("");
 }
 
-// Splits an absolute path into segments for comparison in computeHops
-// below. "~" is a separate root (root's own home dir, distinct from "/" -
-// see FS above) with no segments in common with anything under "/", so it
-// gets a sentinel null rather than being treated as a zero-length path.
 function pathSegments(p) {
-  return p === "~" ? null : p.split("/").filter(Boolean);
+  return p.split("/").filter(Boolean);
+}
+
+function baseName(p) {
+  var parts = pathSegments(p);
+  return parts.length ? parts[parts.length - 1] : "/";
+}
+
+function underHome(p) {
+  return p === HOME || p.indexOf(HOME + "/") === 0;
+}
+
+// What a person would type after `cd` for this name: as is, unless the
+// shell would split or expand it.
+function shellQuote(name) {
+  if (/^[A-Za-z0-9_.\/:@%+,-]+$/.test(name)) return name;
+  return "'" + name.replace(/'/g, "'\\''") + "'";
 }
 
 // Relative "cd" hops to walk from one absolute path to another: up to
 // their common ancestor, then down into the target - the way a person
 // would navigate there without knowing (or typing) the full absolute
-// path. Each hop is a single plain segment or "..", so every hop is a
-// valid argument to the existing single-segment cd resolution (no need to
-// teach resolveCd about compound "../.." paths). Falls back to a single
-// absolute-path hop when "~" is on either end, since there's no relative
-// path between the two root systems.
+// path. Each hop is a single plain segment or "..". Falls back to a single
+// absolute-path hop when exactly one end is inside the home directory:
+// nobody walks out of ~ a ".." at a time.
 function computeHops(from, to) {
+  if (underHome(from) !== underHome(to)) return [to];
   var fromParts = pathSegments(from);
   var toParts = pathSegments(to);
-  if (!fromParts || !toParts) return [to];
   var i = 0;
   while (i < fromParts.length && i < toParts.length && fromParts[i] === toParts[i]) {
     i++;
@@ -330,35 +363,34 @@ function computeHops(from, to) {
 // Same "type it, then run it" flow as the scripted intro, but triggered by
 // clicking a directory link instead of playing on a timer. Clears out any
 // partially-typed input first so a stray in-progress command can't get
-// mixed in with the click. Works for any folder added to FS later, not
-// just projects.
+// mixed in with the click. Works for any directory `ls` prints, not just
+// the site's own.
 //
-// origin is the directory this link was printed from. Combined with the
-// current cwd, computeHops decides how many "cd" steps are needed: if the
-// link came from the directory the visitor is standing in right now,
-// that's just one plain "cd <name>", same as typing it, which fails the
-// same way typing it would if something's actually wrong. If it's a stale
-// link from elsewhere in the scrollback, a single relative "cd <name>"
-// would often fail even though the directory obviously still exists - so
-// instead this walks there hop by hop, which (since both ends are real FS
-// paths) can't fail. Either way "ls -a" only replays after the final hop
-// succeeds - a failed cd already reported its own bash error and left cwd
-// untouched, so re-listing afterward would just be a pointless (and
-// confusing) repeat of whatever's already on screen.
-function navigateTo(name, origin) {
+// target is the directory the link stands for, as an absolute path - where
+// it was when `ls` printed it. Combined with the current cwd, computeHops
+// decides how many "cd" steps are needed: if the link came from the
+// directory the visitor is standing in right now, that's just one plain
+// "cd <name>", same as typing it. If it's a stale link from elsewhere in
+// the scrollback, a single relative "cd <name>" would often fail even
+// though the directory obviously still exists - so instead this walks
+// there hop by hop. Either way "ls -a" only replays after the final hop
+// succeeds - a failed cd (the directory may have been removed since) has
+// already reported its own bash error and left cwd untouched, so re-listing
+// afterward would just be a pointless (and confusing) repeat of whatever's
+// already on screen.
+function navigateTo(target) {
   navigating = true;
   term.options.disableStdin = true;
   clearInputLine();
 
-  var hops = computeHops(cwd, resolveCd(name, origin));
-  // Zero hops means this (stale) link resolves to the exact directory the
+  var hops = computeHops(cwd, target);
+  // Zero hops means this (stale) link leads to the exact directory the
   // visitor is already standing in - there's no sensible walk to animate,
-  // so fall back to the literal clicked name. Every hop below runs through
-  // the exact same cd resolution manual typing would use, so this isn't a
-  // special case logically: it fails for the same reason typing
-  // "cd <name>" from inside that directory would - there's no subdirectory
-  // by that name in *this* directory, only a same-named one elsewhere.
-  if (!hops.length) hops = [name];
+  // so fall back to the literal clicked name. It runs through the same cd
+  // as everything else, so it fails for the same reason typing "cd <name>"
+  // from inside that directory would - there's no subdirectory by that
+  // name in *this* directory, only a same-named one elsewhere.
+  if (!hops.length) hops = [baseName(target)];
 
   function finish() {
     navigating = false;
@@ -367,32 +399,31 @@ function navigateTo(name, origin) {
   }
 
   function runHop(i) {
+    var command = "cd " + shellQuote(hops[i]);
     typeLine(
-      "cd " + hops[i],
+      command,
       function () {
         wait(randBetween(150, 350), function () {
-          var ok = runCommand("cd " + hops[i]);
-          writePrompt();
-          if (!ok) {
-            finish();
-            return;
-          }
-          if (i + 1 < hops.length) {
-            runHop(i + 1);
-            return;
-          }
-          typeLine(
-            "ls -a",
-            function () {
-              wait(randBetween(150, 350), function () {
-                runCommand("ls -a");
-                writePrompt();
-                finish();
-              });
-            },
-            700,
-            1300
-          );
+          submitLine(command).then(function (result) {
+            if (result.logout || result.status !== 0) {
+              finish();
+              return;
+            }
+            if (i + 1 < hops.length) {
+              runHop(i + 1);
+              return;
+            }
+            typeLine(
+              "ls -a",
+              function () {
+                wait(randBetween(150, 350), function () {
+                  submitLine("ls -a").then(finish);
+                });
+              },
+              700,
+              1300
+            );
+          });
         });
       },
       150,
@@ -402,96 +433,6 @@ function navigateTo(name, origin) {
 
   runHop(0);
 }
-
-// Records where each directory/file-link name landed on screen after an
-// `ls` write completes, so the link provider can find it later. list/entries
-// mirror what was just printed: list is the full displayed row (may include
-// "." and ".."), entries is the subset that are real, cd-able directories.
-// linkNames is the subset of entries whose name IS an external URL (rather
-// than a plain directory name) - clicking one opens that URL instead of
-// cd-ing, since it isn't a real directory. atCwd is the directory this
-// listing was printed from, stored as each entry's origin so navigateTo
-// can later tell a live "cd <name>" apart from a stale, elsewhere-printed
-// one (see navigateTo/computeHops for why that distinction matters). oneLine
-// mirrors the same flag the `ls` handler used to decide layout - when false,
-// each name landed on its own row instead of sharing one, so line has to
-// advance per entry instead of column.
-function registerDirLinks(list, entries, linkNames, atCwd, oneLine) {
-  var lastLine = term.buffer.active.baseY + term.buffer.active.cursorY + 1;
-  var startLine = oneLine ? lastLine : lastLine - (list.length - 1);
-  var col = 1;
-  for (var i = 0; i < list.length; i++) {
-    var name = list[i];
-    var line = oneLine ? startLine : startLine + i;
-    if (entries.indexOf(name) !== -1) {
-      var isLink = linkNames && linkNames.indexOf(name) !== -1;
-      dirLinks.push({
-        line: line,
-        startCol: col,
-        endCol: col + name.length - 1,
-        name: name,
-        url: isLink ? name : undefined,
-        origin: isLink ? undefined : atCwd,
-      });
-    }
-    col = oneLine ? col + name.length + 2 : 1;
-  }
-}
-
-// Resolves a cd target against a working directory (defaults to the
-// current one) - passing an explicit base lets callers (navigateTo, via
-// computeHops) resolve a path against a directory other than wherever the
-// visitor is right now.
-function resolveCd(target, base) {
-  var from = base === undefined ? cwd : base;
-  if (!target || target === "~") return "~";
-  if (target === "..") {
-    if (from === "~" || from === "/") return from;
-    var parts = from.split("/").filter(Boolean);
-    parts.pop();
-    return parts.length ? "/" + parts.join("/") : "/";
-  }
-  if (target.charAt(0) === "/") return target;
-  var baseStr = from === "~" ? "" : from;
-  return baseStr + "/" + target;
-}
-
-// Minimal virtual filesystem: path -> list of entries in that directory.
-// "~" is root's empty home dir, separate from "/" (filesystem root) - cd ..
-// from a top-level dir like /var lands at "/", not "~", same as a real box.
-// cd/ls both read from this single source of truth so a directory only
-// needs to be added here to become real.
-var FS = {
-  "~": [],
-  "/": ["var"],
-  "/var": ["www"],
-  "/var/www": ["dubsector.dev"],
-  "/var/www/dubsector.dev": ["projects", "github", "caffeine"],
-  "/var/www/dubsector.dev/projects": [
-    "https://dubsector.github.io/mcmmo-builds",
-    "https://dubsector.github.io/video-shrinker",
-    "https://dubsector.github.io/mc-server-stats",
-    "https://grandtot.al",
-    "https://github.com/getchunes",
-  ],
-  "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
-  "/var/www/dubsector.dev/caffeine": ["https://buymeacoffee.com/dubsector"],
-};
-
-// Files that are really external links: cwd -> array of entry names (from
-// FS above) that open a new tab instead of cd-ing when clicked. The entry
-// name itself IS the target URL, not a separate label pointing at one.
-var FILE_LINKS = {
-  "/var/www/dubsector.dev/projects": [
-    "https://dubsector.github.io/mcmmo-builds",
-    "https://dubsector.github.io/video-shrinker",
-    "https://dubsector.github.io/mc-server-stats",
-    "https://grandtot.al",
-    "https://github.com/getchunes",
-  ],
-  "/var/www/dubsector.dev/github": ["https://github.com/dubsector"],
-  "/var/www/dubsector.dev/caffeine": ["https://buymeacoffee.com/dubsector"],
-};
 
 // True while the fake `cmatrix` is running full-screen. While active, onData
 // below stops routing keystrokes to the normal line editor entirely - the
@@ -541,25 +482,33 @@ function initMatrixColumns() {
 // untouched underneath and reappears exactly as it was. \x1b[2J clears the
 // alt buffer up front so a previous cmatrix run (the alt buffer persists
 // hidden, not destroyed, when swapped out) can't bleed into this one.
+//
+// The shell runs this as its `cmatrix` command and waits on the returned
+// promise, the way a real shell waits on a foreground process.
+var matrixExited = null;
 function startMatrix() {
   matrixActive = true;
   term.write("\x1b[?25l\x1b[?1049h\x1b[2J\x1b[H");
   initMatrixColumns();
   matrixInterval = setInterval(drawMatrixFrame, 50);
+  return new Promise(function (resolve) {
+    matrixExited = resolve;
+  });
 }
 
 // Ctrl+C is the only exit, matching real cmatrix's SIGINT handler (which
 // restores the terminal via endwin() before exiting) rather than any-key-
 // to-quit. Leaving the alt buffer and re-showing the cursor is the exact
-// inverse of startMatrix's setup, then a fresh prompt is printed - same as
-// a real shell reprompting once the foreground process it was waiting on
-// exits.
+// inverse of startMatrix's setup; the shell prints its next prompt once it
+// sees the program has exited.
 function stopMatrix() {
   matrixActive = false;
   clearInterval(matrixInterval);
   matrixInterval = null;
   term.write("\x1b[?1049l\x1b[?25h");
-  writePrompt();
+  var exited = matrixExited;
+  matrixExited = null;
+  if (exited) exited();
 }
 
 function drawMatrixFrame() {
@@ -606,9 +555,11 @@ function drawMatrixFrame() {
   if (out) term.write(out);
 }
 
+// Runs one line in the shell and prints what it wrote. Resolves, once the
+// output is on screen, to the shell's result: { status, logout, ... }.
 function runCommand(line) {
   var trimmed = line.trim();
-  if (trimmed === "") return;
+  if (trimmed === "") return Promise.resolve({ status: 0, logout: false });
 
   // Every path that runs a command funnels through here - manual typing,
   // the scripted intro, and clicked directory links alike - so history
@@ -616,82 +567,44 @@ function runCommand(line) {
   history.push(trimmed);
   historyIndex = history.length;
 
-  var parts = trimmed.split(/\s+/);
-  var cmd = parts[0];
-  var args = parts.slice(1);
-  var arg = args.join(" ");
-
-  if (cmd === "clear") {
-    term.clear();
-    return;
-  }
-
-  if (cmd === "cd") {
-    var target = resolveCd(arg);
-    if (target === "~" || FS.hasOwnProperty(target)) {
-      cwd = target;
-      return true;
-    }
-    term.write(
-      "\r\nbash: cd: " + (arg || "~") + ": No such file or directory"
-    );
-    return false;
-  }
-
-  if (cmd === "ls") {
-    var flags = args
-      .filter(function (a) {
-        return a.charAt(0) === "-";
-      })
-      .join("");
-    var showAll = flags.indexOf("a") !== -1;
-    // Captured up front rather than read as `cwd` inside the write callback
-    // below - registerDirLinks needs the directory this listing was
-    // actually printed from, not wherever cwd happens to point by the time
-    // the callback runs.
-    var atCwd = cwd;
-    // Sorted rather than trusting FS's own array order - real `ls` (no -f)
-    // always lists alphabetically regardless of a directory's on-disk
-    // order, and FS's arrays are just written in whatever order read
-    // naturally when a directory was added.
-    var entries = (FS[atCwd] || []).slice().sort();
-    var linkNames = FILE_LINKS[atCwd] || [];
-    var list = showAll ? [".", ".."].concat(entries) : entries;
-    if (list.length) {
-      // Real `ls` never splits a single filename across two rows - it lays
-      // entries out in columns sized to the terminal, falling back to one
-      // name per line once nothing fits side by side. There are never more
-      // than a handful of entries in any directory here, so that full
-      // fallback (rather than a real multi-column grid) is close enough:
-      // one shared row if it fits, else one entry per row.
-      var oneLine = list.join("  ").length <= term.cols;
-      // Underline every real directory name (and file-link name) so it
-      // reads as clickable even before a visitor hovers it (hover-only
-      // affordance doesn't exist on touchscreens). "." and ".." stay plain -
-      // not worth linking.
-      var display = list
-        .map(function (name) {
-          return entries.indexOf(name) !== -1 ? "\x1b[4m" + name + "\x1b[24m" : name;
-        })
-        .join(oneLine ? "  " : "\r\n");
-      term.write("\r\n" + display, function () {
-        registerDirLinks(list, entries, linkNames, atCwd, oneLine);
+  var abort = new AbortController();
+  running = abort;
+  return shellReady
+    .then(function (shell) {
+      if (!shell) {
+        return { output: "-bash: /bin/bash: Input/output error\n", status: 126, logout: false };
+      }
+      return shell.run(line, {
+        cols: term.cols,
+        rows: term.rows,
+        history: history,
+        signal: abort.signal,
       });
-    }
-    return;
-  }
+    })
+    .catch(function (error) {
+      return { output: "-bash: " + ((error && error.message) || error) + "\n", status: 1, logout: false };
+    })
+    .then(function (result) {
+      running = null;
+      if (result.cwd) cwd = result.cwd;
+      return new Promise(function (resolve) {
+        term.write(result.output, function () {
+          resolve(result);
+        });
+      });
+    });
+}
 
-  if (cmd === "cmatrix") {
-    startMatrix();
-    return "cmatrix";
-  }
-
-  if (cmd === "exit" || cmd === "logout") {
-    startLogout();
-    return "logout";
-  }
-
-  term.write("\r\nbash: " + cmd + ": command not found");
+// What pressing Enter on a line does, whoever typed it: move to a new
+// line, run it, and print the next prompt - or, if it ended the session,
+// hand over to the login screen instead.
+function submitLine(line) {
+  term.write("\r\n");
+  return runCommand(line).then(function (result) {
+    if (result.logout) startLogout();
+    else term.write(promptString());
+    return result;
+  });
 }
 
 function wait(ms, cb) {
@@ -863,9 +776,8 @@ function writeLoginBanner() {
 // (see handleLoginKeystroke for why a failed *attempt* doesn't repeat it).
 function startLogout() {
   term.options.disableStdin = true;
-  cwd = "~";
-  dirLinks = [];
-  term.write("\r\nlogout\r\n");
+  cwd = HOME;
+  term.write("logout\r\n");
   wait(randBetween(300, 600), function () {
     term.clear();
     writeLoginBanner();
@@ -969,49 +881,62 @@ function bootSequence(done) {
   }, 2600, 3600);
 }
 
-// Tab completion for `cd <partial>`, matched against the current
-// directory's entries in FS. Only completes at the end of the line -
-// mid-line tab completion is a much fussier problem and isn't the case
-// being asked for here.
+// Tab completion for `cd <partial>`, matched against the directories the
+// shell finds there. Only completes at the end of the line - mid-line tab
+// completion is a much fussier problem and isn't the case being asked for
+// here.
 function handleTab() {
   if (cursorPos !== inputBuffer.length) return;
 
   var parts = inputBuffer.split(/\s+/);
   if (parts[0] !== "cd" || parts.length < 2) return;
 
-  var partial = parts[parts.length - 1];
-  var entries = FS[cwd] || [];
-  var matches = entries.filter(function (name) {
-    return name.indexOf(partial) === 0;
-  });
-  if (matches.length === 0) return;
+  // "cd /var/w" completes "w" against what is in "/var/".
+  var word = parts[parts.length - 1];
+  var slash = word.lastIndexOf("/");
+  var dir = word.slice(0, slash + 1);
+  var partial = word.slice(slash + 1);
+  var typed = inputBuffer;
 
-  var completion =
-    matches.length === 1
-      ? matches[0]
-      : matches.reduce(function (a, b) {
-          var i = 0;
-          while (i < a.length && i < b.length && a[i] === b[i]) i++;
-          return a.slice(0, i);
-        });
+  shellReady
+    .then(function (shell) {
+      return shell ? shell.directories(dir) : [];
+    })
+    .then(function (entries) {
+      // The answer is for the line as it was when Tab was pressed.
+      if (inputBuffer !== typed || running || loginMode) return;
 
-  if (completion.length <= partial.length) {
-    // Ambiguous and no further common prefix to fill in - list the
-    // options (real bash behavior) instead of silently doing nothing,
-    // then reprint the prompt with what was typed so far so the visitor
-    // can keep disambiguating.
-    if (matches.length > 1) {
-      term.write("\r\n" + matches.join("  "));
-      writePrompt();
-      term.write(inputBuffer);
-    }
-    return;
-  }
+      var matches = entries.filter(function (name) {
+        // Hidden directories only once the dot has been typed, as in bash.
+        return name.indexOf(partial) === 0 && (partial.charAt(0) === "." || name.charAt(0) !== ".");
+      });
+      if (matches.length === 0) return;
 
-  var toAppend = completion.slice(partial.length);
-  inputBuffer += toAppend;
-  cursorPos += toAppend.length;
-  term.write(toAppend);
+      var completion =
+        matches.length === 1
+          ? matches[0]
+          : matches.reduce(function (a, b) {
+              var i = 0;
+              while (i < a.length && i < b.length && a[i] === b[i]) i++;
+              return a.slice(0, i);
+            });
+
+      if (completion.length <= partial.length) {
+        // Ambiguous and no further common prefix to fill in - list the
+        // options (real bash behavior) instead of silently doing nothing,
+        // then reprint the prompt with what was typed so far so the visitor
+        // can keep disambiguating.
+        if (matches.length > 1) {
+          term.write("\r\n" + matches.join("  ") + "\r\n" + promptString() + inputBuffer);
+        }
+        return;
+      }
+
+      var toAppend = completion.slice(partial.length);
+      inputBuffer += toAppend;
+      cursorPos += toAppend.length;
+      term.write(toAppend);
+    });
 }
 
 term.onData(function (data) {
@@ -1019,6 +944,16 @@ term.onData(function (data) {
 
   if (matrixActive) {
     if (data === "\x03") stopMatrix();
+    return;
+  }
+
+  if (running) {
+    // Ctrl+C interrupts whatever is in the foreground; the terminal echoes
+    // it as ^C and the shell prompts again once the command has stopped.
+    if (data === "\x03" && !running.signal.aborted) {
+      term.write("^C\r\n");
+      running.abort();
+    }
     return;
   }
 
@@ -1078,8 +1013,7 @@ term.onData(function (data) {
     inputBuffer = "";
     cursorPos = 0;
     trackCommand(line);
-    var result = runCommand(line);
-    if (result !== "cmatrix" && result !== "logout") writePrompt();
+    submitLine(line);
     return;
   }
 
@@ -1120,26 +1054,26 @@ term.onData(function (data) {
 // input and desync the prompt.
 function runIntro() {
   term.options.disableStdin = true;
-  writePrompt();
+  term.write("\r\n" + promptString());
   typeLine(
-    "cd var/www/dubsector.dev",
+    "cd /var/www/dubsector.dev",
     function () {
       wait(randBetween(150, 350), function () {
-        runCommand("cd var/www/dubsector.dev");
-        writePrompt();
-        typeLine(
-          "ls -a",
-          function () {
-            wait(randBetween(150, 350), function () {
-              runCommand("ls -a");
-              writePrompt();
-              term.options.disableStdin = false;
-              term.focus();
-            });
-          },
-          900,
-          1800
-        );
+        submitLine("cd /var/www/dubsector.dev").then(function () {
+          typeLine(
+            "ls -a",
+            function () {
+              wait(randBetween(150, 350), function () {
+                submitLine("ls -a").then(function () {
+                  term.options.disableStdin = false;
+                  term.focus();
+                });
+              });
+            },
+            900,
+            1800
+          );
+        });
       });
     },
     1000,
