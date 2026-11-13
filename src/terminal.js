@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { initAnalytics, trackCommand, trackClick, trackLink } from "./analytics.js";
+import { createLineEditor, splitKeys } from "./readline.js";
 
 initAnalytics();
 
@@ -148,7 +149,7 @@ if (window.visualViewport) {
 // Purely a display toggle, like a real monitor's power button - the
 // terminal session underneath (history, cwd, whatever's mid-typed) is
 // completely untouched by this, on purpose. Nothing here touches term,
-// inputBuffer, or disables stdin.
+// the line being typed, or disables stdin.
 //
 // The visual collapse/expand is a CSS keyframe animation (crtPowerOff/
 // crtPowerOn in style.css), played by adding .powering-off/.powering-on
@@ -279,34 +280,78 @@ var shellReady = new Promise(function (resolve) {
 var cwd = HOME;
 
 // Set while a command is in the foreground: the AbortController that
-// Ctrl+C trips. Keys typed meanwhile go nowhere, as there is no line being
-// edited to put them in.
+// Ctrl+C trips.
 var running = null;
 
-var inputBuffer = "";
-// Index into inputBuffer where the next typed character lands - xterm.js
-// only renders/tracks its own screen cursor, it has no idea what "the
-// current input line" even is (that's normally a real shell's job).
-// Every edit below has to move this in lockstep with the terminal's own
-// visual cursor via explicit escape codes.
-var cursorPos = 0;
-
 // Command history for this session (not persisted across reloads).
-// historyIndex points one past the end when not currently browsing.
 var history = [];
-var historyIndex = 0;
 
-// Replaces the whole line, cursor landing at the end - matches real bash
-// on history recall.
-function setInputLine(text) {
-  var forward = inputBuffer.length - cursorPos;
-  if (forward > 0) term.write("\x1b[" + forward + "C");
-  for (var i = 0; i < inputBuffer.length; i++) {
-    term.write("\b \b");
+// Earlier lines of a command that isn't finished yet - an open quote, an
+// `if` waiting for its `fi` - while the "> " prompt asks for the rest.
+var continued = [];
+
+// Keys that arrived while nothing could take them (a command running, the
+// prompt not yet drawn), in the order they were typed. A real terminal
+// holds typing the same way, so nothing typed ahead is lost.
+var typeahead = [];
+// True whenever the prompt is not ready for a key.
+var busy = true;
+
+// The line being typed (src/readline.js): the editing, history recall and
+// Tab completion bash's readline provides.
+var editor = createLineEditor(term, {
+  history: history,
+  complete: function (line, cursor, cols) {
+    return shellReady.then(function (shell) {
+      return shell ? shell.complete(line, cursor, cols) : null;
+    });
+  },
+  onLine: enterLine,
+  // Ctrl+C throws the line away, with any earlier lines of the same
+  // command.
+  onInterrupt: function () {
+    continued = [];
+    shellReady.then(function (shell) {
+      if (shell) shell.interrupt();
+    });
+    showPrompt();
+  },
+  // Ctrl+D on an empty line is end of input: a login shell logs out, and a
+  // half-typed command is abandoned as a syntax error.
+  onEnd: function () {
+    if (continued.length) {
+      continued = [];
+      term.write("\r\nbash: syntax error: unexpected end of file\r\n");
+      showPrompt();
+    } else {
+      typeahead = [];
+      startLogout();
+    }
+  },
+});
+
+// Draws the prompt and starts a new line after it.
+function showPrompt() {
+  busy = true;
+  return editor.begin(continued.length ? "> " : promptString()).then(function () {
+    busy = false;
+    drain();
+  });
+}
+
+// Hands the editor the keys that are waiting, for as long as it can take
+// them.
+function drain() {
+  while (typeahead.length && !busy && !running && !loginMode && !banned && !term.options.disableStdin) {
+    var pending = editor.handle(typeahead.shift());
+    if (pending) {
+      busy = true;
+      pending.then(function () {
+        busy = false;
+        drain();
+      });
+    }
   }
-  inputBuffer = text;
-  cursorPos = text.length;
-  term.write(text);
 }
 
 // The path the way bash's default prompt shows it: the home directory, and
@@ -330,14 +375,15 @@ function promptString() {
 var navigating = false;
 
 // A directory link can only be followed from an idle prompt: not mid-
-// replay, not while a command (cmatrix included) has the terminal, and not
-// from the login screen, where links left in the scrollback mean nothing.
+// replay, not while a command (cmatrix included) has the terminal or is
+// half typed over several lines, and not from the login screen, where
+// links left in the scrollback mean nothing.
 function canNavigate() {
-  return !navigating && !running && !loginMode && !banned;
+  return !navigating && !running && !busy && !continued.length && !loginMode && !banned;
 }
 
 function clearInputLine() {
-  setInputLine("");
+  editor.clear();
 }
 
 function pathSegments(p) {
@@ -575,17 +621,54 @@ function drawMatrixFrame() {
   if (out) term.write(out);
 }
 
-// Runs one line in the shell and prints what it wrote. Resolves, once the
+// Ubuntu's default: a command isn't kept if it repeats the one before it
+// or starts with a space.
+function remember(command) {
+  if (command.charAt(0) === " " || command === history[history.length - 1]) return;
+  history.push(command);
+}
+
+// A command typed over several lines is kept in history as one, joined the
+// way bash joins it: straight on after a backslash, with a space after a
+// word or operator that expects more, with "; " otherwise.
+function joinLines(lines) {
+  return lines.reduce(function (text, line) {
+    if (/\\$/.test(text)) return text.slice(0, -1) + line;
+    return text + (/(^|[\s;])(do|then|else|\{|\()$|(\||&&)$/.test(text.trim()) ? " " : "; ") + line;
+  });
+}
+
+// `!!` stands for the previous command, except inside single quotes or
+// after a backslash. Returns null when there is no previous command.
+function expandHistory(text) {
+  var out = "";
+  var quoted = false;
+  for (var i = 0; i < text.length; i++) {
+    var c = text.charAt(i);
+    if (c === "'") quoted = !quoted;
+    if (c === "\\" && !quoted) {
+      out += c + text.charAt(++i);
+    } else if (c === "!" && text.charAt(i + 1) === "!" && !quoted) {
+      if (!history.length) return null;
+      out += history[history.length - 1];
+      i++;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+// Runs a command in the shell and prints what it wrote. Resolves, once the
 // output is on screen, to the shell's result: { status, logout, ... }.
-function runCommand(line) {
-  var trimmed = line.trim();
-  if (trimmed === "") return Promise.resolve({ status: 0, logout: false });
+// remembered is how it goes into history, when that isn't the text itself.
+function runCommand(line, remembered) {
+  if (line.trim() === "") return Promise.resolve({ status: 0, logout: false });
 
   // Every path that runs a command funnels through here - manual typing,
   // the scripted intro, and clicked directory links alike - so history
   // captures all of them, not just what the visitor typed themselves.
-  history.push(trimmed);
-  historyIndex = history.length;
+  remember(remembered || line.trim());
 
   var abort = new AbortController();
   running = abort;
@@ -615,16 +698,59 @@ function runCommand(line) {
     });
 }
 
-// What pressing Enter on a line does, whoever typed it: move to a new
-// line, run it, and print the next prompt - or, if it ended the session,
-// hand over to the login screen instead.
-function submitLine(line) {
-  term.write("\r\n");
-  return runCommand(line).then(function (result) {
-    if (result.logout) startLogout();
-    else term.write(promptString());
+// What follows a command: the next prompt - or, if it ended the session,
+// the login screen.
+function afterCommand(result) {
+  if (result.logout) {
+    typeahead = [];
+    startLogout();
+    return result;
+  }
+  return showPrompt().then(function () {
     return result;
   });
+}
+
+// Runs a line that is already on screen after the prompt, as the scripted
+// intro and clicked links leave it: move below it, run it, prompt again.
+function submitLine(line) {
+  busy = true;
+  term.write("\r\n");
+  return runCommand(line).then(afterCommand);
+}
+
+// Enter on a typed line. The shell says whether what has been typed so far
+// is a whole command; if not, bash's "> " prompt asks for the next line of
+// it.
+function enterLine(line) {
+  busy = true;
+  var lines = continued.concat([line]);
+  var text = lines.join("\n");
+  shellReady
+    .then(function (shell) {
+      return shell ? shell.incomplete(text) : false;
+    })
+    .catch(function () {
+      return false;
+    })
+    .then(function (more) {
+      if (more) {
+        continued = lines;
+        showPrompt();
+        return;
+      }
+      continued = [];
+      var command = expandHistory(text);
+      if (command === null) {
+        term.write("bash: !!: event not found\r\n");
+        showPrompt();
+        return;
+      }
+      // bash shows what it made of a line it expanded before running it.
+      if (command !== text) term.write(command + "\r\n");
+      trackCommand(command);
+      runCommand(command, joinLines(command.trim().split("\n"))).then(afterCommand);
+    });
 }
 
 function wait(ms, cb) {
@@ -907,64 +1033,6 @@ function bootSequence(done) {
   }, 2600, 3600);
 }
 
-// Tab completion for `cd <partial>`, matched against the directories the
-// shell finds there. Only completes at the end of the line - mid-line tab
-// completion is a much fussier problem and isn't the case being asked for
-// here.
-function handleTab() {
-  if (cursorPos !== inputBuffer.length) return;
-
-  var parts = inputBuffer.split(/\s+/);
-  if (parts[0] !== "cd" || parts.length < 2) return;
-
-  // "cd /var/w" completes "w" against what is in "/var/".
-  var word = parts[parts.length - 1];
-  var slash = word.lastIndexOf("/");
-  var dir = word.slice(0, slash + 1);
-  var partial = word.slice(slash + 1);
-  var typed = inputBuffer;
-
-  shellReady
-    .then(function (shell) {
-      return shell ? shell.directories(dir) : [];
-    })
-    .then(function (entries) {
-      // The answer is for the line as it was when Tab was pressed.
-      if (inputBuffer !== typed || running || loginMode) return;
-
-      var matches = entries.filter(function (name) {
-        // Hidden directories only once the dot has been typed, as in bash.
-        return name.indexOf(partial) === 0 && (partial.charAt(0) === "." || name.charAt(0) !== ".");
-      });
-      if (matches.length === 0) return;
-
-      var completion =
-        matches.length === 1
-          ? matches[0]
-          : matches.reduce(function (a, b) {
-              var i = 0;
-              while (i < a.length && i < b.length && a[i] === b[i]) i++;
-              return a.slice(0, i);
-            });
-
-      if (completion.length <= partial.length) {
-        // Ambiguous and no further common prefix to fill in - list the
-        // options (real bash behavior) instead of silently doing nothing,
-        // then reprint the prompt with what was typed so far so the visitor
-        // can keep disambiguating.
-        if (matches.length > 1) {
-          term.write("\r\n" + matches.join("  ") + "\r\n" + promptString() + inputBuffer);
-        }
-        return;
-      }
-
-      var toAppend = completion.slice(partial.length);
-      inputBuffer += toAppend;
-      cursorPos += toAppend.length;
-      term.write(toAppend);
-    });
-}
-
 term.onData(function (data) {
   if (banned) return;
 
@@ -973,103 +1041,29 @@ term.onData(function (data) {
     return;
   }
 
-  if (running) {
-    // Ctrl+C interrupts whatever is in the foreground; the terminal echoes
-    // it as ^C and the shell prompts again once the command has stopped.
-    if (data === "\x03" && !running.signal.aborted) {
-      term.write("^C\r\n");
-      running.abort();
-    }
-    return;
-  }
-
   if (loginMode) {
     handleLoginKeystroke(data);
     return;
   }
 
-  if (data === "\t") {
-    handleTab();
-    return;
-  }
-
-  if (data === "\x1b[A") {
-    // Up: step back through history, stopping at the oldest entry.
-    if (historyIndex > 0) {
-      historyIndex--;
-      setInputLine(history[historyIndex]);
+  if (running && data === "\x03") {
+    // Ctrl+C interrupts whatever is in the foreground; the terminal echoes
+    // it as ^C and the shell prompts again once the command has stopped.
+    // Like a real terminal, it also forgets anything typed ahead.
+    if (!running.signal.aborted) {
+      term.write("^C\r\n");
+      running.abort();
     }
+    typeahead = [];
     return;
   }
 
-  if (data === "\x1b[B") {
-    // Down: step forward, landing back on a blank line past the newest entry.
-    if (historyIndex < history.length - 1) {
-      historyIndex++;
-      setInputLine(history[historyIndex]);
-    } else if (historyIndex < history.length) {
-      historyIndex = history.length;
-      setInputLine("");
-    }
-    return;
-  }
+  Array.prototype.push.apply(typeahead, splitKeys(data));
+  drain();
+});
 
-  if (data === "\x1b[D") {
-    // Left: xterm moves its own screen cursor fine on its own, we just
-    // need our logical index to agree with it.
-    if (cursorPos > 0) {
-      cursorPos--;
-      term.write("\x1b[D");
-    }
-    return;
-  }
-
-  if (data === "\x1b[C") {
-    if (cursorPos < inputBuffer.length) {
-      cursorPos++;
-      term.write("\x1b[C");
-    }
-    return;
-  }
-
-  var code = data.charCodeAt(0);
-
-  if (data === "\r") {
-    var line = inputBuffer;
-    inputBuffer = "";
-    cursorPos = 0;
-    trackCommand(line);
-    submitLine(line);
-    return;
-  }
-
-  if (code === 127) {
-    // Backspace deletes the character behind the cursor, not necessarily
-    // the last character in the buffer. Redraw everything after the
-    // cursor shifted one column left, plus a trailing space to erase
-    // what used to be the last character on the line, then walk the
-    // screen cursor back to where it logically belongs.
-    if (cursorPos > 0) {
-      var beforeDel = inputBuffer.slice(0, cursorPos - 1);
-      var afterDel = inputBuffer.slice(cursorPos);
-      inputBuffer = beforeDel + afterDel;
-      cursorPos--;
-      term.write("\b" + afterDel + " ");
-      term.write("\x1b[" + (afterDel.length + 1) + "D");
-    }
-    return;
-  }
-
-  if (code < 32) return; // ignore other control chars (Home/End/etc.)
-
-  // Insert at the cursor rather than always appending, same idea as
-  // backspace above: redraw the shifted tail, then walk back to it.
-  var beforeIns = inputBuffer.slice(0, cursorPos);
-  var afterIns = inputBuffer.slice(cursorPos);
-  inputBuffer = beforeIns + data + afterIns;
-  cursorPos += data.length;
-  term.write(data + afterIns);
-  if (afterIns.length) term.write("\x1b[" + afterIns.length + "D");
+term.onResize(function () {
+  editor.reflow();
 });
 
 // A first-time visitor has no way to know `cd`/`ls` do anything here, so
@@ -1080,31 +1074,36 @@ term.onData(function (data) {
 // input and desync the prompt.
 function runIntro() {
   term.options.disableStdin = true;
-  term.write("\r\n" + promptString());
-  typeLine(
-    "cd /var/www/dubsector.dev",
-    function () {
-      wait(randBetween(150, 350), function () {
-        submitLine("cd /var/www/dubsector.dev").then(function () {
-          typeLine(
-            "ls -a",
-            function () {
-              wait(randBetween(150, 350), function () {
-                submitLine("ls -a").then(function () {
-                  term.options.disableStdin = false;
-                  term.focus();
+  // Anything typed while the login played is dropped rather than replayed
+  // into the middle of the demonstration.
+  typeahead = [];
+  term.write("\r\n");
+  showPrompt().then(function () {
+    typeLine(
+      "cd /var/www/dubsector.dev",
+      function () {
+        wait(randBetween(150, 350), function () {
+          submitLine("cd /var/www/dubsector.dev").then(function () {
+            typeLine(
+              "ls -a",
+              function () {
+                wait(randBetween(150, 350), function () {
+                  submitLine("ls -a").then(function () {
+                    term.options.disableStdin = false;
+                    term.focus();
+                  });
                 });
-              });
-            },
-            900,
-            1800
-          );
+              },
+              900,
+              1800
+            );
+          });
         });
-      });
-    },
-    1000,
-    2000
-  );
+      },
+      1000,
+      2000
+    );
+  });
 }
 
 bootSequence(runIntro);
