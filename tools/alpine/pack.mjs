@@ -1,7 +1,6 @@
-// Turns the root filesystem rootfs.sh builds into the image the site serves,
-// and writes the list of site links rootfs.sh puts on it.
+// Turns the root filesystem rootfs.sh builds into the image the site serves.
+// (The site's links are not in it: src/linux.js adds them at boot.)
 //
-//     node tools/alpine/pack.mjs links <manifest>
 //     node tools/alpine/pack.mjs image <rootfs.tar> <image.tar>
 //
 // v86 doesn't read a disk image. It serves the guest its files one at a time
@@ -21,9 +20,6 @@ import { readTar, writeTar } from "./tar.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
-
-// Where the site keeps its folders on the machine; see src/shell/tree.js.
-const SITE = "var/www/dubsector.dev";
 
 // v86's tools and BIOS images, at one commit of github.com/copy/v86.
 const V86_COMMIT = "315b2b0b758703ef0e6cc7b4088d6068f83f3c20";
@@ -46,18 +42,6 @@ const BOOT = {
 };
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
-
-function links(manifest) {
-  const folders = JSON.parse(readFileSync(join(root, "src", "shell", "links.json"), "utf8"));
-  let lines = "";
-  for (const [folder, urls] of Object.entries(folders)) {
-    for (const url of urls) {
-      // Each link is a file at the path its URL spells, as in tree.js.
-      lines += `${SITE}/${folder}/${url.replace("://", ":/")}\t${Buffer.from(url + "\n").toString("base64")}\n`;
-    }
-  }
-  writeFileSync(manifest, lines);
-}
 
 async function v86File(path, cache) {
   const file = join(cache, path.replace("/", "-"));
@@ -113,9 +97,8 @@ async function image(rootfs, out) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-if (command === "links" && args.length === 1) links(args[0]);
-else if (command === "image" && args.length === 2) await image(args[0], args[1]);
+if (command === "image" && args.length === 2) await image(args[0], args[1]);
 else {
-  console.error("usage: pack.mjs links <manifest> | pack.mjs image <rootfs.tar> <image.tar>");
+  console.error("usage: pack.mjs image <rootfs.tar> <image.tar>");
   process.exit(2);
 }

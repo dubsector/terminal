@@ -1,4 +1,5 @@
 import { V86 } from "v86";
+import LINKS from "./shell/links.json";
 
 // The real machine behind `reboot`: v86 emulates a 32-bit PC in the page
 // and boots the Alpine Linux image that tools/alpine builds. This is its own
@@ -24,6 +25,30 @@ var RESET = new Error("machine reset");
 window.addEventListener("error", function (event) {
   if (event.error === RESET) event.preventDefault();
 });
+
+// The site's folders, laid onto the machine's disk as it starts, from the
+// same links.json the other machine's `ls` reads (see src/shell/tree.js).
+// They are not in the image, so adding a link never means building a new
+// one. Each link is a file at the path its URL spells: "https://grandtot.al"
+// is the file grandtot.al in a directory called "https:".
+var SITE = ["var", "www", "dubsector.dev"];
+function addSiteLinks(fs) {
+  var encoder = new TextEncoder();
+  function dir(parent, name) {
+    var id = fs.Search(parent, name);
+    return id === -1 ? fs.CreateDirectory(name, parent) : id;
+  }
+  var writes = [];
+  Object.keys(LINKS).forEach(function (folder) {
+    LINKS[folder].forEach(function (url) {
+      var parts = SITE.concat(folder, url.replace("://", ":/").split("/")).filter(Boolean);
+      var name = parts.pop();
+      var parent = parts.reduce(dir, 0);
+      if (fs.Search(parent, name) === -1) writes.push(fs.CreateBinaryFile(name, parent, encoder.encode(url + "\n")));
+    });
+  });
+  return Promise.all(writes);
+}
 
 // hooks:
 //   write(bytes)   output from the machine, as a Uint8Array
@@ -56,6 +81,9 @@ window.__bootLinux = function (hooks) {
     // about a hundred and fifty.
     var storage = emulator.fs9p && emulator.fs9p.storage;
     if (storage && storage.uncache) storage.uncache = function () {};
+
+    // Long before the kernel gets as far as mounting the disk.
+    if (emulator.fs9p) addSiteLinks(emulator.fs9p).catch(function () {});
 
     var cpu = emulator.v86 && emulator.v86.cpu;
     if (cpu) {
