@@ -433,9 +433,41 @@ export function createCommands(host, machine, shellPid) {
     return ctx.exec(line, { cwd: ctx.cwd });
   }
 
+  // just-bash's `uniq -c` pads its counts to four columns; the real one
+  // uses seven, which is what lines the numbers up in `sort | uniq -c`.
+  async function uniq(args, ctx) {
+    var result = await ctx.origCommand(args);
+    var counting = args.some(function (arg) {
+      return /^-[a-z]*c/.test(arg) || arg === "--count";
+    });
+    if (!counting) return result;
+    return Object.assign({}, result, {
+      stdout: result.stdout.replace(/^ *(\d+) /gm, function (match, count) {
+        return count.padStart(7) + " ";
+      }),
+    });
+  }
+
+  // just-bash's `xargs` only takes an option's value as a separate word;
+  // `-n1` and `-I{}` are how they are usually typed.
+  function xargs(args, ctx) {
+    var split = [];
+    var i = 0;
+    for (; i < args.length && args[i].charAt(0) === "-" && args[i] !== "--"; i++) {
+      var joined = /^-([InPd])(.+)$/.exec(args[i]);
+      if (joined) split.push("-" + joined[1], joined[2]);
+      else {
+        split.push(args[i]);
+        if (/^-[InPd]$/.test(args[i]) && i + 1 < args.length) split.push(args[++i]);
+      }
+    }
+    return ctx.origCommand(split.concat(args.slice(i)));
+  }
+
   var commands = {
     uname: uname, id: id, free: free, df: df, uptime: uptime, who: who, w: w, ps: ps,
     lsb_release: lsbRelease, ip: ip, hostname: hostname, env: env, printenv: printenv, man: man, sudo: sudo,
+    uniq: uniq, xargs: xargs,
     whoami: function () {
       return ok(user + "\n");
     },
