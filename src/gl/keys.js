@@ -10,6 +10,11 @@
 var DOWN_S = 0.03;
 var UP_S = 0.07;
 
+// How long a key typed on the visitor's behalf is held down, and Shift
+// around it a little longer, the way a hand overlaps the two.
+var STRIKE_S = 0.07;
+var STRIKE_SHIFT_S = 0.12;
+
 // What xterm sends for the keys that are not printable, so a click arrives
 // at the shell exactly as the real key would.
 var SEQUENCES = {
@@ -82,12 +87,44 @@ export function createKeys(nodes, type, onLock, wake) {
       pos: 0,
       held: false, // by the real keyboard
       latched: false, // sticky modifier clicked on the model
+      struck: 0, // seconds left of a keystroke typed for the visitor
     };
   });
   var byCode = {};
   keys.forEach(function (k) {
     byCode[k.code] = k;
   });
+
+  // Which key types a character, and whether it takes Shift, read from the
+  // legends so it follows this keyboard's layout. The main block wins over
+  // the keypad, which repeats the digits, the period and Enter.
+  var byChar = null;
+  function keyFor(ch) {
+    if (!byChar) {
+      byChar = {};
+      var add = function (c, k, shift) {
+        if (c && !(c in byChar)) byChar[c] = { key: k, shift: shift };
+      };
+      var ordered = keys
+        .filter(function (k) {
+          return !/^Numpad/.test(k.code);
+        })
+        .concat(
+          keys.filter(function (k) {
+            return /^Numpad/.test(k.code);
+          })
+        );
+      ordered.forEach(function (k) {
+        if (SEQUENCES[k.code] !== undefined) add(SEQUENCES[k.code], k, false);
+        else {
+          add(printable(k.node.userData, false, false), k, false);
+          add(printable(k.node.userData, true, false), k, true);
+        }
+      });
+    }
+    return byChar[ch] || null;
+  }
+  var shiftKey = byCode.ShiftLeft || byCode.ShiftRight || null;
 
   var pointerKey = null;
   var stickyShift = false;
@@ -179,6 +216,16 @@ export function createKeys(nodes, type, onLock, wake) {
       pointerKey = null;
       wake();
     },
+    // A character the terminal typed by itself (the login and the guided
+    // commands): press the key that would have typed it. Only the picture
+    // changes; the character is already on its way.
+    strike: function (ch) {
+      var hit = keyFor(ch);
+      if (!hit) return;
+      hit.key.struck = STRIKE_S;
+      if (hit.shift && shiftKey) shiftKey.struck = Math.max(shiftKey.struck, STRIKE_SHIFT_S);
+      wake();
+    },
     // Focus went elsewhere, so the keyups will never arrive.
     releaseAll: function () {
       keys.forEach(function (k) {
@@ -192,7 +239,11 @@ export function createKeys(nodes, type, onLock, wake) {
       var moving = false;
       for (var i = 0; i < keys.length; i++) {
         var k = keys[i];
-        var goal = k.held || k.latched || k === pointerKey ? 1 : 0;
+        if (k.struck > 0) {
+          k.struck = Math.max(0, k.struck - dt);
+          moving = true;
+        }
+        var goal = k.held || k.latched || k.struck > 0 || k === pointerKey ? 1 : 0;
         if (k.pos === goal) continue;
         // Three time constants in the quoted time: an ease that is all but
         // complete by then.
