@@ -18,6 +18,10 @@ npm run dev    # esbuild --watch, writes to dist/
 npm run build  # production build to dist/
 ```
 
+`npm run check:shell` runs the scripts in `tools/shell-check/cases.mjs` in real bash and
+in the site's shell and reports any that print something different. It needs bash: the
+system's on Linux and macOS, WSL's on Windows. CI runs it on every code change.
+
 ## Deploy
 
 Deploys to Cloudflare Workers (static assets) via Cloudflare's git integration, watching `main`.
