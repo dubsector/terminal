@@ -1,9 +1,11 @@
 import { defineCommand } from "just-bash";
 
-// just-bash's own `ls` does the listing. This wraps it to add the three
-// things a real `ls` only does when it is writing to a terminal, and that
-// this site leans on: names laid out in columns, link trees printed as the
-// URLs they stand for, and directories and URLs made clickable.
+// `ls`, written to match GNU ls on the points a visitor will notice: names
+// in columns when writing to a terminal, the long format's alignment, sizes,
+// link counts and dates, and its error messages. It also does two things of
+// its own for this site: link trees are listed as the URLs they stand for,
+// and directories and URLs are clickable. Options it doesn't know are handed
+// to just-bash's `ls`.
 
 // A command can't ask whether its output is a terminal here, so the session
 // tells it: every command whose output is piped, captured or sent to a file
@@ -15,8 +17,15 @@ export var NOT_A_TTY_FD = 199;
 // spells (see tree.js).
 var LINK_ROOTS = { "http:": true, "https:": true };
 
-// permissions, link count | owner | gap | group | size, date | name
-var LONG_LINE = /^(\S{10}\s+\d+\s+)(\S+)(\s+)(\S+)(\s+\S+\s+\S+\s+\d+\s+[\d:]+\s)(.*)$/;
+var OPTIONS = /^[aAl1hFprtSdgonC]*$/;
+// Long spellings of those. --color is accepted and changes nothing: this
+// terminal has one colour.
+var LONG_OPTIONS = {
+  all: "a", "almost-all": "A", "human-readable": "h", classify: "F", reverse: "r", directory: "d",
+  "numeric-uid-gid": "n", "no-group": "o", color: "",
+};
+var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var SIX_MONTHS_MS = 15778476000;
 
 // An OSC 8 hyperlink, underlined so it reads as clickable before it is
 // hovered (there is no hover on a touchscreen). xterm keeps the target with
@@ -26,51 +35,118 @@ function hyperlink(uri, text) {
   return "\x1b]8;;" + uri + "\x1b\\\x1b[4m" + text + "\x1b[24m\x1b]8;;\x1b\\";
 }
 
-function directoryLink(path, text) {
-  return hyperlink("cd:" + encodeURI(path), text);
-}
-
 function parse(args) {
-  var parsed = { flags: [], operands: [], letters: "", plain: true };
+  var parsed = { operands: [], letters: "", known: true };
   var rest = false;
   args.forEach(function (arg) {
     if (rest || arg === "-" || arg.charAt(0) !== "-") parsed.operands.push(arg);
     else if (arg === "--") rest = true;
-    else {
-      parsed.flags.push(arg);
-      if (arg.charAt(1) === "-") parsed.plain = false;
-      else parsed.letters += arg.slice(1);
-    }
+    else if (arg.charAt(1) === "-") {
+      var name = arg.slice(2).split("=")[0];
+      if (LONG_OPTIONS.hasOwnProperty(name)) parsed.letters += LONG_OPTIONS[name];
+      else parsed.known = false;
+    } else parsed.letters += arg.slice(1);
   });
-  // Recursive and directory-itself listings, and anything spelled as a long
-  // option, are left exactly as just-bash prints them.
-  if (/[Rd]/.test(parsed.letters)) parsed.plain = false;
+  if (!OPTIONS.test(parsed.letters)) parsed.known = false;
   return parsed;
 }
 
-async function isDirectory(fs, path) {
+async function lstat(fs, path) {
   try {
-    return (await fs.stat(path)).isDirectory;
+    return await fs.lstat(path);
   } catch (e) {
-    return false;
+    return null;
   }
 }
 
+// One thing to list: `name` is what gets printed for it.
+async function entry(fs, name, path, extra) {
+  var stat = await lstat(fs, path);
+  if (!stat) return null;
+  var found = { name: name, path: path, stat: stat, directory: stat.isDirectory, symlink: stat.isSymbolicLink };
+  if (found.symlink) {
+    try {
+      found.target = await fs.readlink(path);
+    } catch (e) {
+      found.target = "";
+    }
+  }
+  return Object.assign(found, extra);
+}
+
 // Every file under a link root, as the URL its path spells.
-async function collectLinks(fs, root, scheme) {
+async function linkEntries(fs, root, scheme) {
   var links = [];
   async function walk(path, rel) {
     var names = await fs.readdir(path);
     for (var i = 0; i < names.length; i++) {
       var child = path + "/" + names[i];
-      if (await isDirectory(fs, child)) await walk(child, rel + "/" + names[i]);
-      else links.push({ url: scheme + "/" + rel + "/" + names[i], path: child });
+      var stat = await lstat(fs, child);
+      if (stat && stat.isDirectory) await walk(child, rel + "/" + names[i]);
+      else if (stat) links.push(await entry(fs, scheme + "/" + rel + "/" + names[i], child, { url: true }));
     }
   }
   await walk(root, "");
-  return links.sort(function (a, b) {
-    return a.url < b.url ? -1 : a.url > b.url ? 1 : 0;
+  return links;
+}
+
+async function readDirectory(fs, dir, letters) {
+  var all = /a/.test(letters);
+  var almostAll = all || /A/.test(letters);
+  var entries = [];
+  if (all) {
+    entries.push(await entry(fs, ".", dir, { dots: true }));
+    entries.push(await entry(fs, "..", fs.resolvePath(dir, ".."), { dots: true }));
+  }
+  var names = await fs.readdir(dir);
+  for (var i = 0; i < names.length; i++) {
+    if (names[i].charAt(0) === "." && !almostAll) continue;
+    var found = await entry(fs, names[i], fs.resolvePath(dir, names[i]));
+    if (!found) continue;
+    if (found.directory && LINK_ROOTS[names[i]]) {
+      entries = entries.concat(await linkEntries(fs, found.path, names[i]));
+    } else {
+      entries.push(found);
+    }
+  }
+  return entries;
+}
+
+function size(item) {
+  if (item.directory) return 4096;
+  if (item.symlink) return item.target.length;
+  return item.stat.size;
+}
+
+// Byte order, which is how ls sorts in the C locale this machine uses.
+function byName(a, b) {
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
+
+function sort(entries, letters) {
+  var sorted = entries.slice().sort(function (a, b) {
+    if (/t/.test(letters)) return b.stat.mtime - a.stat.mtime || byName(a, b);
+    if (/S/.test(letters)) return size(b) - size(a) || byName(a, b);
+    return byName(a, b);
   });
+  return /r/.test(letters) ? sorted.reverse() : sorted;
+}
+
+// -F and -p mark what kind of thing a name is.
+function indicator(item, letters) {
+  if (/[Fp]/.test(letters) && item.directory) return "/";
+  if (!/F/.test(letters)) return "";
+  if (item.symlink) return "@";
+  return item.stat.isFile && item.stat.mode & 73 ? "*" : "";
+}
+
+// What is shown for a name, plain and as written to a terminal.
+function label(item, letters, tty) {
+  var text = item.name + indicator(item, letters);
+  var shown = text;
+  if (tty && item.url) shown = hyperlink(item.name, text);
+  else if (tty && item.directory && !item.dots) shown = hyperlink("cd:" + encodeURI(item.path), text);
+  return { text: text, shown: shown };
 }
 
 // The way GNU ls fills a terminal: down each column first, in as many
@@ -108,36 +184,20 @@ function columns(items, width) {
   return [];
 }
 
-async function shortBlock(lines, dir, opts, ctx, tty) {
-  var fs = ctx.fs;
-  var indicators = /[Fp]/.test(opts.letters);
-  var items = [];
-  var hasLinks = false;
-  for (var i = 0; i < lines.length; i++) {
-    var text = lines[i];
-    if (text === "." || text === "..") {
-      items.push({ text: text, shown: text });
-      continue;
-    }
-    var name = indicators ? text.replace(/[\/*@|=]$/, "") : text;
-    var path = fs.resolvePath(dir, name);
-    var directory = await isDirectory(fs, path);
-    if (directory && LINK_ROOTS[name]) {
-      (await collectLinks(fs, path, name)).forEach(function (link) {
-        hasLinks = true;
-        items.push({ text: link.url, shown: tty ? hyperlink(link.url, link.url) : link.url });
-      });
-    } else {
-      items.push({ text: text, shown: tty && directory ? directoryLink(path, text) : text });
-    }
-  }
-  if (!items.length) return "";
+function shortListing(entries, opts, ctx, tty) {
+  if (!entries.length) return "";
+  var items = entries.map(function (item) {
+    return label(item, opts.letters, tty);
+  });
   var rows = null;
   if (tty && !/1/.test(opts.letters)) {
     rows = columns(items, parseInt(ctx.env.get("COLUMNS"), 10) || 80);
     // The one departure from GNU's layout: URLs that don't all fit on one
     // row go one to a line. They are there to be read and tapped, and a
     // grid of them is neither easy to scan nor to hit on a phone.
+    var hasLinks = entries.some(function (item) {
+      return item.url;
+    });
     if (hasLinks && rows.length > 1) rows = null;
   }
   if (!rows) {
@@ -148,84 +208,136 @@ async function shortBlock(lines, dir, opts, ctx, tty) {
   return rows.join("\n") + "\n";
 }
 
+function permissions(item) {
+  var bits = "rwxrwxrwx";
+  var out = item.directory ? "d" : item.symlink ? "l" : "-";
+  var mode = item.symlink ? 511 : item.stat.mode;
+  for (var i = 0; i < 9; i++) out += mode & (256 >> i) ? bits.charAt(i) : "-";
+  // The sticky bit (/tmp) shows in place of the last x.
+  if (mode & 512) out = out.slice(0, 9) + (mode & 1 ? "t" : "T");
+  return out;
+}
+
+// Sizes the way -h prints them: powers of 1024, rounded up, one decimal
+// below ten.
+function human(bytes) {
+  var units = ["", "K", "M", "G", "T"];
+  var value = bytes;
+  var unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  if (!unit) return String(bytes);
+  if (value < 10) return (Math.ceil(value * 10) / 10).toFixed(1) + units[unit];
+  return Math.ceil(value) + units[unit];
+}
+
+// A file touched in the last six months shows its time of day, anything
+// older (or dated in the future) its year.
+function date(mtime, now) {
+  var day = mtime.getUTCDate();
+  var age = now - mtime;
+  var tail =
+    age >= 0 && age < SIX_MONTHS_MS
+      ? String(mtime.getUTCHours()).padStart(2, "0") + ":" + String(mtime.getUTCMinutes()).padStart(2, "0")
+      : " " + mtime.getUTCFullYear();
+  return MONTHS[mtime.getUTCMonth()] + " " + String(day).padStart(2, " ") + " " + tail;
+}
+
+// A directory's link count is itself, its "." and the ".." of each
+// directory inside it.
+async function linkCount(fs, item) {
+  if (!item.directory) return 1;
+  var count = 2;
+  try {
+    var names = await fs.readdir(item.path);
+    for (var i = 0; i < names.length; i++) {
+      var stat = await lstat(fs, item.path + "/" + names[i]);
+      if (stat && stat.isDirectory) count++;
+    }
+  } catch (e) {}
+  return count;
+}
+
+async function longListing(entries, opts, ctx, tty, withTotal) {
+  var letters = opts.letters;
+  var owner = /n/.test(letters) ? "0" : "root";
+  var now = Date.now();
+  var rows = [];
+  var blocks = 0;
+  for (var i = 0; i < entries.length; i++) {
+    var item = entries[i];
+    var bytes = size(item);
+    // What the file takes on disk, in 1K units of 4K blocks.
+    if (!item.symlink) blocks += Math.ceil(bytes / 4096) * 4;
+    var name = label(item, letters, tty).shown;
+    if (item.symlink) name = item.name + " -> " + item.target;
+    rows.push({
+      permissions: permissions(item),
+      links: String(await linkCount(ctx.fs, item)),
+      size: /h/.test(letters) ? human(bytes) : String(bytes),
+      date: date(item.stat.mtime, now),
+      name: name,
+    });
+  }
+  function widest(key) {
+    return rows.reduce(function (max, row) {
+      return Math.max(max, row[key].length);
+    }, 0);
+  }
+  var linkWidth = widest("links");
+  var sizeWidth = widest("size");
+  var out = withTotal ? "total " + (/h/.test(letters) ? human(blocks * 1024) : blocks) + "\n" : "";
+  rows.forEach(function (row) {
+    var fields = [row.permissions, row.links.padStart(linkWidth)];
+    if (!/g/.test(letters)) fields.push(owner);
+    if (!/o/.test(letters)) fields.push(owner);
+    fields.push(row.size.padStart(sizeWidth), row.date, row.name);
+    out += fields.join(" ") + "\n";
+  });
+  return out;
+}
+
 // just-bash prints every file as owned by "user"; on this machine there is
 // only root.
-function ownedByRoot(match) {
-  var owner = match[2] === "user" ? "root" : match[2];
-  var group = match[4] === "user" ? "root" : match[4];
-  return match[1] + owner + match[3] + group + match[5];
-}
-
-function fixOwners(text) {
-  return text
-    .split("\n")
-    .map(function (line) {
-      var match = LONG_LINE.exec(line);
-      return match ? ownedByRoot(match) + match[6] : line;
-    })
-    .join("\n");
-}
-
-async function longBlock(lines, dir, opts, ctx, tty) {
-  var fs = ctx.fs;
-  var out = [];
-  for (var i = 0; i < lines.length; i++) {
-    var match = LONG_LINE.exec(lines[i]);
-    if (!match) {
-      out.push(lines[i]);
-      continue;
-    }
-    var name = match[6];
-    var directory = match[1].charAt(0) === "d";
-    var path = fs.resolvePath(dir, name);
-    if (directory && LINK_ROOTS[name]) {
-      var links = await collectLinks(fs, path, name);
-      for (var k = 0; k < links.length; k++) {
-        var listed = await ctx.origCommand(opts.flags.concat(["--", links[k].path]));
-        var entry = LONG_LINE.exec(listed.stdout.split("\n")[0]);
-        if (!entry) continue;
-        out.push(ownedByRoot(entry) + (tty ? hyperlink(links[k].url, links[k].url) : links[k].url));
-      }
-    } else if (tty && directory && name !== "." && name !== "..") {
-      out.push(ownedByRoot(match) + directoryLink(path, name));
-    } else {
-      out.push(ownedByRoot(match) + name);
-    }
-  }
-  return out.length ? out.join("\n") + "\n" : "";
+function ownedByRoot(text) {
+  return text.replace(/^(\S{10}\s+\d+\s+)user(\s+)user(\s)/gm, "$1root$2root$3");
 }
 
 async function ls(args, ctx) {
-  var tty = !(ctx.fileDescriptors && ctx.fileDescriptors.has(NOT_A_TTY_FD));
   var opts = parse(args);
-  var long = /[lgon]/.test(opts.letters);
-  var dirs = opts.operands.length ? opts.operands.slice().sort() : ["."];
-
-  var plain = opts.plain;
-  for (var i = 0; plain && i < dirs.length; i++) {
-    plain = await isDirectory(ctx.fs, ctx.fs.resolvePath(ctx.cwd, dirs[i]));
-  }
-  // Files, missing paths and the options above: nothing to lay out or link.
-  if (!plain) {
+  if (!opts.known) {
     var raw = await ctx.origCommand(args);
-    return Object.assign({}, raw, { stdout: fixOwners(raw.stdout) });
+    return Object.assign({}, raw, { stdout: ownedByRoot(raw.stdout) });
   }
 
-  var stdout = "";
+  var fs = ctx.fs;
+  var tty = !(ctx.fileDescriptors && ctx.fileDescriptors.has(NOT_A_TTY_FD));
+  var long = /[lgon]/.test(opts.letters);
+  var listing = long ? longListing : shortListing;
+  var operands = opts.operands.length ? opts.operands : ["."];
+
   var stderr = "";
-  var exitCode = 0;
-  for (var d = 0; d < dirs.length; d++) {
-    var result = await ctx.origCommand(opts.flags.concat(["--", dirs[d]]));
-    stderr += result.stderr;
-    exitCode = Math.max(exitCode, result.exitCode);
-    var lines = result.stdout.split("\n").filter(function (line) {
-      return line !== "";
-    });
-    var dir = ctx.fs.resolvePath(ctx.cwd, dirs[d]);
-    if (dirs.length > 1) stdout += (d ? "\n" : "") + dirs[d] + ":\n";
-    stdout += await (long ? longBlock : shortBlock)(lines, dir, opts, ctx, tty);
+  var files = [];
+  var dirs = [];
+  for (var i = 0; i < operands.length; i++) {
+    var found = await entry(fs, operands[i], fs.resolvePath(ctx.cwd, operands[i]));
+    if (!found) stderr += "ls: cannot access '" + operands[i] + "': No such file or directory\n";
+    else if (found.directory && !/d/.test(opts.letters)) dirs.push(found);
+    else files.push(found);
   }
-  return { stdout: stdout, stderr: stderr, exitCode: exitCode };
+
+  var stdout = await listing(sort(files, opts.letters), opts, ctx, tty, false);
+  var headers = operands.length > 1;
+  dirs = sort(dirs, opts.letters);
+  for (var d = 0; d < dirs.length; d++) {
+    if (stdout) stdout += "\n";
+    if (headers) stdout += dirs[d].name + ":\n";
+    var entries = sort(await readDirectory(fs, dirs[d].path, opts.letters), opts.letters);
+    stdout += await listing(entries, opts, ctx, tty, true);
+  }
+  return { stdout: stdout, stderr: stderr, exitCode: stderr ? 2 : 0 };
 }
 
 export var lsCommand = defineCommand("ls", ls);
