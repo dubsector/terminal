@@ -3,6 +3,7 @@ import { HOME, SITE, seedFiles } from "./tree.js";
 import { NOT_A_TTY_FD, lsCommand } from "./ls.js";
 import { createMachine } from "./machine.js";
 import { createCommands } from "./commands.js";
+import { createCompleter } from "./complete.js";
 
 // One login session: a bash interpreter (just-bash) over an in-memory disk.
 //
@@ -339,21 +340,35 @@ export function createSession(host) {
     return execute(line, options);
   }
 
-  // The directories inside `path` (relative to the shell's own), for
-  // completing `cd`.
-  async function directories(path) {
+  var completer = createCompleter(bash, session);
+  async function complete(line, cursor, cols) {
+    await ready;
+    return completer(line, cursor, cols);
+  }
+
+  // Whether `text` is the start of a command rather than a whole one: an
+  // open quote, an `if` without its `fi`, a line ending in a pipe or a
+  // backslash. bash asks for the rest with its "> " prompt.
+  async function incomplete(text) {
+    await ready;
+    if (/(^|[^\\])(\\\\)*\\$/.test(text)) return true;
     try {
-      await ready;
-      var dir = bash.fs.resolvePath(session.cwd, path.replace(/^~(?=\/|$)/, HOME) || ".");
-      var names = await bash.fs.readdir(dir);
-      var found = [];
-      for (var i = 0; i < names.length; i++) {
-        if ((await bash.fs.stat(dir + "/" + names[i])).isDirectory) found.push(names[i]);
-      }
-      return found.sort();
+      bash.transform(text);
     } catch (error) {
-      return [];
+      var message = String((error && error.message) || error);
+      if (/unexpected EOF|got EOF|unterminated here-document/.test(message)) return true;
+      // Any other complaint made about the very end of the text is the
+      // parser running out of input, not finding something wrong.
+      var where = /Parse error at (\d+):(\d+)/.exec(message);
+      var lines = text.split("\n");
+      return !!where && +where[1] === lines.length && +where[2] > lines[lines.length - 1].length;
     }
+    return /(\|\||&&|\|)\s*$/.test(text);
+  }
+
+  // Ctrl+C at the prompt: nothing ran, and $? says so.
+  function interrupt() {
+    session.status = 130;
   }
 
   // Puts a file on the disk from outside the shell.
@@ -362,5 +377,5 @@ export function createSession(host) {
     bash.fs.writeFileSync(path, content);
   }
 
-  return { home: HOME, run: run, directories: directories, write: write };
+  return { home: HOME, run: run, complete: complete, incomplete: incomplete, interrupt: interrupt, write: write };
 }

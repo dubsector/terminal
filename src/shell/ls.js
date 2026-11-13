@@ -151,8 +151,9 @@ function label(item, letters, tty) {
 
 // The way GNU ls fills a terminal: down each column first, in as many
 // columns as fit, two spaces apart. When nothing fits side by side that
-// comes out as one name per line.
-function columns(items, width) {
+// comes out as one name per line. Each item is { text, shown }: what to
+// measure and what to print.
+export function columns(items, width) {
   var count = items.length;
   for (var cols = Math.min(count, Math.max(1, Math.floor(width / 3))); cols >= 1; cols--) {
     var rows = Math.ceil(count / cols);
