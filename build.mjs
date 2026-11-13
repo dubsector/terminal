@@ -66,11 +66,21 @@ const options = {
   define: { __ASSETS__: JSON.stringify(assets) },
 };
 
+// The shell is built on its own because just-bash's browser build still
+// leans on two pieces of Node for its gzip and tar commands: the zlib
+// module and the Buffer global. Injecting Buffer into the other bundles
+// would add it to each for nothing (their libraries only test for it).
+const shellOptions = {
+  ...options,
+  entryPoints: ["src/shell.js"],
+  alias: { "node:zlib": "./src/shell/zlib.js" },
+  inject: ["./src/shell/buffer.js"],
+};
+
 if (watch) {
-  const ctx = await context(options);
-  await ctx.watch();
+  for (const each of [options, shellOptions]) await (await context(each)).watch();
   console.log("Watching for changes...");
 } else {
-  await build(options);
+  await Promise.all([build(options), build(shellOptions)]);
   console.log("Build complete.");
 }
