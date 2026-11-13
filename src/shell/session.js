@@ -150,7 +150,14 @@ function createPlugin(session) {
       context.ast.statements.forEach(function (st) {
         var before = session.sawExit;
         session.sawExit = false;
-        visit(st, true, true);
+        // Run with its output going somewhere other than a terminal, the
+        // whole line is in the position a piped command would be.
+        if (session.piped) {
+          st.pipelines.forEach(function (pipeline) {
+            pipeline.commands.forEach(offTerminal);
+          });
+        }
+        visit(st, !session.piped, true);
         var hasExit = session.sawExit;
         session.sawExit = before || hasExit;
         remember(st, hasExit);
@@ -206,6 +213,7 @@ export function createSession(host) {
     top: false,
     parsed: false,
     sawExit: false,
+    piped: false,
   };
 
   var bash = new Bash({
@@ -242,6 +250,7 @@ export function createSession(host) {
   async function execute(line, options) {
     session.top = true;
     session.parsed = false;
+    session.piped = options.terminal === false;
     // Private to just-bash, and the only way to make $? on this line be the
     // status of the last one. The version is pinned in package.json.
     if (bash.state) bash.state.lastExitCode = session.status;
@@ -290,7 +299,9 @@ export function createSession(host) {
       // unless just-bash gave up on a runaway script.
       logout = session.sawExit && !/^bash: (too many|execution|.*limit)/m.test(stderr);
     }
-    return { output: inCharacter(stdout + stderr), status: session.status, cwd: session.cwd, logout: logout };
+    stdout = inCharacter(stdout);
+    stderr = inCharacter(stderr);
+    return { output: stdout + stderr, stdout: stdout, stderr: stderr, status: session.status, cwd: session.cwd, logout: logout };
   }
 
   // Lays out the rest of the disk and starts the shell the way login does.
@@ -333,7 +344,8 @@ export function createSession(host) {
   var ready = prepare();
 
   // Runs one line typed at the prompt. options: { cols, rows, history,
-  // signal }. Resolves to what to print, the exit status, the directory the
+  // signal }, and terminal: false to run it as if its output were piped
+  // away. Resolves to what to print, the exit status, the directory the
   // shell is now in, and whether the line ended the session.
   async function run(line, options) {
     await ready;
