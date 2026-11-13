@@ -1,4 +1,5 @@
-// What is on the machine's disk when a visitor logs in.
+// The site's own files on the machine's disk. The system around them is in
+// machine.js.
 
 export var HOME = "/root";
 export var SITE = "/var/www/dubsector.dev";
@@ -16,9 +17,6 @@ var LINKS = {
   github: ["https://github.com/dubsector"],
   caffeine: ["https://buymeacoffee.com/dubsector"],
 };
-
-// Empty directories a real install has; files below create their own.
-export var DIRS = [HOME, "/tmp", "/home"];
 
 // A file name can't contain a slash, so a URL can't be one. It can be a
 // path, though: "https://grandtot.al" names the file "grandtot.al" in a

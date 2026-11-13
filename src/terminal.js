@@ -12,6 +12,19 @@ var OS_NAME = "Dubuntu";
 var OS_VERSION = "26.04.1 LTS";
 var KERNEL_VERSION = "6.14.0-15-generic";
 
+// The figures the login banner reports. The shell is given the same ones,
+// so `free`, `df`, `uptime` and `ps` agree with what the visitor was told
+// when they logged in.
+var MACHINE = {
+  load: Math.random() * 0.3,
+  memoryPercent: Math.round(15 + Math.random() * 15),
+  diskPercent: Math.round((30 + Math.random() * 20) * 10) / 10,
+  diskGb: 24.55,
+  processes: 95 + Math.floor(Math.random() * 40),
+  address: "10.13.37.4",
+  bootedAt: Date.now() - (3 + Math.random() * 40) * 86400000,
+};
+
 var term = new Terminal({
   fontFamily: "'Courier New', monospace",
   fontSize: 18,
@@ -243,7 +256,14 @@ var shellReady = new Promise(function (resolve) {
   script.onload = function () {
     resolve(
       window.__createShell
-        ? window.__createShell({ user: USER, hostname: HOSTNAME, cmatrix: startMatrix })
+        ? window.__createShell({
+            user: USER,
+            hostname: HOSTNAME,
+            os: { name: OS_NAME, version: OS_VERSION },
+            kernel: KERNEL_VERSION,
+            stats: MACHINE,
+            cmatrix: startMatrix,
+          })
         : null
     );
   };
@@ -682,10 +702,11 @@ function formatDate(d) {
 function buildMotd(visitorIp) {
   var now = new Date();
   var lastLogin = new Date(now.getTime() - (2 + Math.random() * 6) * 3600000);
-  var load = (Math.random() * 0.3).toFixed(2);
-  var mem = (15 + Math.random() * 15).toFixed(0);
-  var disk = (30 + Math.random() * 20).toFixed(1);
-  var procs = 95 + Math.floor(Math.random() * 40);
+  var load = MACHINE.load.toFixed(2);
+  var mem = MACHINE.memoryPercent;
+  var disk = MACHINE.diskPercent.toFixed(1);
+  var size = MACHINE.diskGb + "GB";
+  var procs = MACHINE.processes;
 
   // The classic Ubuntu MOTD lays system stats out in two columns, but
   // that only fits on an 80-column terminal. Below that, stack them
@@ -694,18 +715,18 @@ function buildMotd(visitorIp) {
   var sysinfo = wide
     ? [
         "  System load:  " + load + "               Processes:             " + procs,
-        "  Usage of /:   " + disk + "% of 24.55GB   Users logged in:       1",
-        "  Memory usage: " + mem + "%                IPv4 address for eth0: 10.13.37.4",
+        "  Usage of /:   " + disk + "% of " + size + "   Users logged in:       1",
+        "  Memory usage: " + mem + "%                IPv4 address for eth0: " + MACHINE.address,
         "  Swap usage:   0%",
       ]
     : [
         "  System load:    " + load,
-        "  Usage of /:     " + disk + "% of 24.55GB",
+        "  Usage of /:     " + disk + "% of " + size,
         "  Memory usage:   " + mem + "%",
         "  Swap usage:     0%",
         "  Processes:      " + procs,
         "  Users logged in: 1",
-        "  IPv4 (eth0):    10.13.37.4",
+        "  IPv4 (eth0):    " + MACHINE.address,
       ];
 
   return [
@@ -871,7 +892,12 @@ function bootSequence(done) {
           // now visitorIpPromise has almost always already resolved.
           wait(randBetween(350, 750), function () {
             visitorIpPromise.then(function (ip) {
-              writeLines(buildMotd(ip));
+              var motd = buildMotd(ip);
+              writeLines(motd);
+              // Where a real login keeps what it just printed.
+              shellReady.then(function (shell) {
+                if (shell) shell.write("/run/motd.dynamic", motd.join("\n"));
+              });
               done();
             });
           });
