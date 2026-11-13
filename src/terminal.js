@@ -249,29 +249,38 @@ var visitorIpPromise = new Promise(function (resolve) {
 // keystrokes - so this is what actually runs what a visitor types. It is a
 // separate script because it is several times the size of everything else
 // here; the login animation covers the time it takes to arrive. Resolves to
-// null if it can't be loaded.
+// null if it can't be loaded. Every command waits on it, so one failed
+// download would otherwise leave a prompt where nothing works: it is tried
+// three times before giving up.
 var shellReady = new Promise(function (resolve) {
-  var script = document.createElement("script");
-  script.src = "./shell.js";
-  script.async = true;
-  script.onload = function () {
-    resolve(
-      window.__createShell
-        ? window.__createShell({
-            user: USER,
-            hostname: HOSTNAME,
-            os: { name: OS_NAME, version: OS_VERSION },
-            kernel: KERNEL_VERSION,
-            stats: MACHINE,
-            cmatrix: startMatrix,
-          })
-        : null
-    );
-  };
-  script.onerror = function () {
-    resolve(null);
-  };
-  document.body.appendChild(script);
+  var failures = 0;
+  function load() {
+    var script = document.createElement("script");
+    script.src = "./shell.js";
+    script.async = true;
+    script.onload = function () {
+      resolve(
+        window.__createShell
+          ? window.__createShell({
+              user: USER,
+              hostname: HOSTNAME,
+              os: { name: OS_NAME, version: OS_VERSION },
+              kernel: KERNEL_VERSION,
+              stats: MACHINE,
+              cmatrix: startMatrix,
+            })
+          : null
+      );
+    };
+    script.onerror = function () {
+      script.remove();
+      failures++;
+      if (failures < 3) setTimeout(load, 1500 * failures);
+      else resolve(null);
+    };
+    document.body.appendChild(script);
+  }
+  load();
 });
 
 // The shell's working directory, as of the last command to finish. The

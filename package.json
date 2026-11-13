@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs --watch",
+    "check:shell": "node tools/shell-check/run.mjs",
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
