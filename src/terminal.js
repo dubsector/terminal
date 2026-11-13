@@ -268,6 +268,7 @@ var shellReady = new Promise(function (resolve) {
               kernel: KERNEL_VERSION,
               stats: MACHINE,
               cmatrix: startMatrix,
+              linux: !!__LINUX__,
             })
           : null
       );
@@ -388,7 +389,7 @@ var navigating = false;
 // half typed over several lines, and not from the login screen, where
 // links left in the scrollback mean nothing.
 function canNavigate() {
-  return !navigating && !running && !busy && !continued.length && !loginMode && !banned;
+  return !navigating && !running && !busy && !continued.length && !loginMode && !banned && !linux;
 }
 
 function clearInputLine() {
@@ -708,8 +709,13 @@ function runCommand(line, remembered) {
 }
 
 // What follows a command: the next prompt - or, if it ended the session,
-// the login screen.
+// the login screen, or the machine going down.
 function afterCommand(result) {
+  if (result.power) {
+    typeahead = [];
+    powerDown(result.power);
+    return result;
+  }
   if (result.logout) {
     typeahead = [];
     startLogout();
@@ -1045,6 +1051,12 @@ function bootSequence(done) {
 term.onData(function (data) {
   if (banned) return;
 
+  // With the Linux machine running, the keyboard is its keyboard.
+  if (linux) {
+    linux.send(data);
+    return;
+  }
+
   if (matrixActive) {
     if (data === "\x03") stopMatrix();
     return;
@@ -1100,6 +1112,7 @@ function runIntro() {
                   submitLine("ls -a").then(function () {
                     term.options.disableStdin = false;
                     term.focus();
+                    wait(5000, prefetchLinux);
                   });
                 });
               },
@@ -1112,6 +1125,157 @@ function runIntro() {
       1000,
       2000
     );
+  });
+}
+
+// `reboot` does not bring this machine back. It starts a real one: Alpine
+// Linux on a PC emulated in the page (src/linux.js), with this terminal on
+// its serial console. `poweroff` there, or here, ends up back at this
+// machine's login.
+//
+// The emulator and what it boots from are several megabytes and nothing else
+// needs them, so they are only loaded for this. __LINUX__ is null in a
+// build with no image (see build.mjs), and then `reboot` restarts this
+// machine like `poweroff` does.
+var LINUX = __LINUX__;
+// The running machine, { send, stop }, while there is one.
+var linux = null;
+
+// What systemd prints on the console as an Ubuntu server goes down. Units
+// that are in this machine's process list.
+var STOPPING = [
+  "Stopped target graphical.target - Graphical Interface.",
+  "Stopped target multi-user.target - Multi-User System.",
+  "Stopped cron.service - Regular background program processing daemon.",
+  "Stopped ssh.service - OpenBSD Secure Shell server.",
+  "Stopped rsyslog.service - System Logging Service.",
+  "Stopped systemd-logind.service - User Login Management.",
+  "Stopped target network.target - Network.",
+  "Stopped systemd-resolved.service - Network Name Resolution.",
+  "Unmounted boot-efi.mount - /boot/efi.",
+  "Reached target umount.target - Unmount All Filesystems.",
+  "Reached target final.target - Late Shutdown Services.",
+];
+
+// Takes this machine down the way `reboot` ("reboot") or `poweroff` asked,
+// then starts whatever comes next.
+function powerDown(how) {
+  busy = true;
+  term.options.disableStdin = true;
+  var toLinux = how === "reboot" && LINUX;
+  var lines = STOPPING.concat(
+    how === "reboot"
+      ? ["Finished systemd-reboot.service - System Reboot.", "Reached target reboot.target - System Reboot."]
+      : ["Finished systemd-poweroff.service - System Power Off.", "Reached target poweroff.target - System Power Off."]
+  );
+  function next() {
+    if (lines.length) {
+      term.write("[  \x1b[1mOK\x1b[0m  ] " + lines.shift() + "\r\n");
+      wait(randBetween(30, 140), next);
+      return;
+    }
+    // The kernel has the last word, stamped with how long it has been up.
+    var up = ((Date.now() - MACHINE.bootedAt) / 1000).toFixed(6);
+    term.write("[" + up.padStart(12) + "] reboot: " + (how === "reboot" ? "Restarting system" : "Power down") + "\r\n");
+    wait(how === "reboot" ? 900 : 2500, toLinux ? startLinux : bootAgain);
+  }
+  wait(randBetween(200, 400), next);
+}
+
+var linuxLoaded = null;
+function loadLinux() {
+  if (!linuxLoaded) {
+    linuxLoaded = new Promise(function (resolve) {
+      var script = document.createElement("script");
+      script.src = "./linux.js";
+      script.onload = function () {
+        resolve(window.__bootLinux || null);
+      };
+      script.onerror = function () {
+        linuxLoaded = null;
+        resolve(null);
+      };
+      document.body.appendChild(script);
+    });
+  }
+  return linuxLoaded;
+}
+
+function startLinux() {
+  term.reset();
+  // What a boot loader shows while it reads the kernel off the disk, which
+  // is what the wait here is: the browser fetching it.
+  term.write("Loading Linux " + LINUX.kernel + " ...\r\nLoading initial ramdisk ...\r\n");
+  loadLinux().then(function (boot) {
+    if (!boot) {
+      linuxFailed();
+      return;
+    }
+    linux = boot({
+      write: function (bytes) {
+        term.write(bytes);
+      },
+      onOff: function () {
+        stopLinux();
+        wait(2500, bootAgain);
+      },
+      // `reboot` inside it: a new machine from the same image. Unlike a
+      // real one it comes back with its disk as it first was.
+      onRestart: function () {
+        stopLinux();
+        wait(900, startLinux);
+      },
+      onError: linuxFailed,
+    });
+    term.options.disableStdin = false;
+    term.focus();
+  });
+}
+
+function stopLinux() {
+  if (linux) linux.stop();
+  linux = null;
+  term.options.disableStdin = true;
+}
+
+// The image didn't arrive. Say so the way a boot loader would, and fall
+// back to the machine that is known to work.
+function linuxFailed() {
+  stopLinux();
+  term.write("\r\nerror: file not found.\r\n\r\nPress any key to continue...\r\n");
+  wait(3000, bootAgain);
+}
+
+// This machine starting up again: a fresh login on the same disk.
+function bootAgain() {
+  term.reset();
+  cwd = HOME;
+  continued = [];
+  typeahead = [];
+  shellReady.then(function (shell) {
+    if (shell) shell.relogin();
+  });
+  term.options.disableStdin = false;
+  bootSequence(runIntro);
+}
+
+// Fetches what the Linux machine needs first into the browser's cache, so
+// that `reboot` doesn't begin with a long silence. It is a download nobody
+// asked for, so it waits until the page is idle and is skipped for anyone
+// who is on a phone, a slow connection, or has asked to save data.
+var linuxPrefetched = false;
+function prefetchLinux() {
+  if (!LINUX || linuxPrefetched) return;
+  var connection = navigator.connection || {};
+  if (connection.saveData || /2g|3g/.test(connection.effectiveType || "")) return;
+  if (window.matchMedia && window.matchMedia("(hover: none)").matches) return;
+  linuxPrefetched = true;
+  ["./linux.js"].concat(LINUX.preload).forEach(function (url) {
+    fetch(url)
+      .then(function (response) {
+        return response.arrayBuffer();
+      })
+      .catch(function () {});
   });
 }
 

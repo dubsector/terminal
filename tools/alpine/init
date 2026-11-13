@@ -1,0 +1,18 @@
+#!/bin/sh
+# The first program the kernel runs, from the initramfs: mount the root
+# filesystem v86 serves over 9p and hand over to it.
+#
+# This stands in for Alpine's own init script, which looks for a block
+# device to mount and waits about ten seconds for one before trying 9p.
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+/bin/busybox mkdir -p /usr/bin /usr/sbin /proc /sys /dev /sysroot
+/bin/busybox --install -s
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+modprobe -a virtio_pci 9pnet_virtio 9p
+echo "Mounting root filesystem"
+mount -t 9p -o trans=virtio,cache=loose host9p /sysroot || exec sh
+umount /sys /proc
+mount -o move /dev /sysroot/dev
+exec switch_root /sysroot /sbin/init

@@ -2,13 +2,18 @@ import { build, context } from "esbuild";
 import { cpSync, mkdirSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { createHash } from "crypto";
 import { gzipSync } from "zlib";
+import { readTar } from "./tools/alpine/tar.mjs";
 
 const watch = process.argv.includes("--watch");
 
 // Empty dist/ rather than removing the directory itself: `wrangler dev`
 // holds a watch on it, and on Windows a watched directory can't be deleted.
+// dist/linux is left for linuxImage() below, which only rewrites its fifteen
+// hundred files when the image has changed.
 if (existsSync("dist")) {
-  for (const entry of readdirSync("dist")) rmSync(`dist/${entry}`, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  for (const entry of readdirSync("dist")) {
+    if (entry !== "linux") rmSync(`dist/${entry}`, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 } else {
   mkdirSync("dist");
 }
@@ -40,7 +45,69 @@ for (const name of readdirSync("src/assets").sort()) {
 }
 assets.sizes.sort((a, b) => a - b);
 if (!assets.sizes.length) throw new Error("src/assets has no light maps (lm_<atlas>_<pass>_<size>.webp)");
-writeFileSync("dist/_headers", "/assets/*\n  Cache-Control: public, max-age=31556952, immutable\n");
+
+// The Linux machine that `reboot` starts in the page (see tools/alpine and
+// src/linux.js). Its image is far too big to keep in git, so the build takes
+// it from the release named in tools/alpine/image.json, checks it is the
+// file that was pinned there, and unpacks it into dist/linux/<id>/ where
+// <id> is taken from its hash, so that it too can be cached for good.
+// ALPINE_IMAGE=<path to an image.tar> uses a local build instead. With
+// neither there is no Linux machine, and `reboot` only starts this one again.
+async function linuxImage() {
+  const pin = JSON.parse(readFileSync("tools/alpine/image.json", "utf8"));
+  const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+  let archive;
+  if (process.env.ALPINE_IMAGE) {
+    archive = readFileSync(process.env.ALPINE_IMAGE);
+  } else if (pin.url) {
+    const cached = `node_modules/.cache/alpine/${pin.sha256}.tar`;
+    if (!existsSync(cached)) {
+      const response = await fetch(pin.url);
+      if (!response.ok) throw new Error(`${pin.url}: HTTP ${response.status}`);
+      const data = Buffer.from(await response.arrayBuffer());
+      if (sha256(data) !== pin.sha256) throw new Error(`${pin.url} is not the image pinned in tools/alpine/image.json`);
+      mkdirSync("node_modules/.cache/alpine", { recursive: true });
+      writeFileSync(cached, data);
+    }
+    archive = readFileSync(cached);
+  } else {
+    rmSync("dist/linux", { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    return null;
+  }
+
+  // The emulator's own code, from the v86 package.
+  const wasmData = readFileSync("node_modules/v86/build/v86.wasm");
+  const id = sha256(archive).slice(0, 10);
+  const base = `./linux/${id}/`;
+  const wasm = `./linux/v86.${sha256(wasmData).slice(0, 10)}.wasm`;
+
+  // image.json is written last, so finding it means the rest is in place.
+  const about = `dist/${base}image.json`;
+  if (!existsSync(about) || !existsSync(`dist/${wasm}`)) {
+    rmSync("dist/linux", { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    mkdirSync(`dist/${base}flat`, { recursive: true });
+    let facts;
+    readTar(archive, (name, data) => {
+      if (name === "image.json") facts = data;
+      else writeFileSync(`dist/${base}${name}`, data);
+    });
+    writeFileSync(`dist/${wasm}`, wasmData);
+    writeFileSync(about, facts);
+  }
+
+  // What a boot always fetches first, for the page to have ready: the
+  // kernel and its initramfs are two thirds of what a boot downloads.
+  const boot = JSON.parse(readFileSync(`dist/${base}fs.json`, "utf8")).fsroot.find((entry) => entry[0] === "boot")[6];
+  const stored = (name) => `${base}flat/${boot.find((entry) => entry[0] === name)[6]}`;
+  const preload = [wasm, `${base}seabios.bin`, `${base}vgabios.bin`, `${base}fs.json`, stored("vmlinuz-virt"), stored("initramfs-virt")];
+  return { ...JSON.parse(readFileSync(about, "utf8")), base, wasm, preload };
+}
+const linux = await linuxImage();
+
+writeFileSync(
+  "dist/_headers",
+  ["/assets/*", "/linux/*"].map((path) => `${path}\n  Cache-Control: public, max-age=31556952, immutable\n`).join("")
+);
 
 // What the 3D view needs for its first frame, for index.html to start
 // fetching before terminal.js and scene.js have even arrived.
@@ -63,7 +130,7 @@ const options = {
   sourcemap: watch,
   format: "iife",
   loader: { ".css": "css" },
-  define: { __ASSETS__: JSON.stringify(assets) },
+  define: { __ASSETS__: JSON.stringify(assets), __LINUX__: JSON.stringify(linux) },
 };
 
 // The shell is built on its own because just-bash's browser build still
@@ -77,10 +144,20 @@ const shellOptions = {
   inject: ["./src/shell/buffer.js"],
 };
 
+// The emulator is also built on its own: v86 runs under Node too, and the
+// Node modules it reaches for there (never in a browser) have to be left as
+// they are rather than looked for.
+const linuxOptions = {
+  ...options,
+  entryPoints: ["src/linux.js"],
+  external: ["crypto", "fs", "perf_hooks", "node:*"],
+};
+
+const bundles = [options, shellOptions].concat(linux ? [linuxOptions] : []);
 if (watch) {
-  for (const each of [options, shellOptions]) await (await context(each)).watch();
+  for (const each of bundles) await (await context(each)).watch();
   console.log("Watching for changes...");
 } else {
-  await Promise.all([build(options), build(shellOptions)]);
+  await Promise.all(bundles.map((each) => build(each)));
   console.log("Build complete.");
 }
