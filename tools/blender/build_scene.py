@@ -2,22 +2,25 @@
 
     blender -b --factory-startup --python tools/blender/build_scene.py -- [flags]
 
-One run regenerates everything in src/assets/:
-    scene.glb              geometry only, meshopt compressed, two UV sets
-    lm_hero_room.webp      terminal + keyboard + cable, room light (window, dusk sky)
-    lm_hero_lamp.webp      same texels, light from the desk lamp only
-    lm_hero_screen.webp    same texels, light from the lit picture only
-    lm_env_room.webp       desk, walls, props, lamp, room light
-    lm_env_lamp.webp       same texels, light from the desk lamp only
-    lm_env_screen.webp     same texels, light from the lit picture only
-    reflect.webp           what the convex glass mirrors (see README.md), lamp on
-    reflect_off.webp       the same with the lamp switched off
+One run regenerates everything in src/assets/ (<N> is the atlas size and
+its two halvings, e.g. 4096, 2048, 1024):
+    scene.glb                  geometry only, meshopt compressed, two UV sets
+    lm_hero_room_<N>.webp      terminal + keyboard + cable, room light (window, dusk sky)
+    lm_hero_lamp_<N>.webp      same texels, light from the desk lamp only
+    lm_hero_screen_<N>.webp    same texels, light from the lit picture only
+    lm_env_room_<N>.webp       desk, walls, props, lamp, room light
+    lm_env_lamp_<N>.webp       same texels, light from the desk lamp only
+    lm_env_screen_<N>.webp     same texels, light from the lit picture only
+    reflect.webp               what the convex glass mirrors (see README.md), lamp on
+    reflect_off.webp           the same with the lamp switched off
 
 Flags (all optional):
-    --samples N        bake samples per texel, hero atlas (default 1024)
-    --env-samples N    same for the env atlas (default 4 x --samples)
-    --size N           atlas size in pixels (default 2048)
+    --size N           atlas size in pixels (default 4096)
+    --samples N        bake samples per texel, hero atlas (default 1024 at 2048,
+                       a quarter of that at 4096: see SAMPLES_2048)
+    --env-samples N    same for the env atlas (default 2 x the hero's)
     --skip-bake        reuse the EXR masters from the bake directory
+    --reuse-unchanged  bake only the atlases whose layout or samples changed
     --preview DIR      also render the check images into DIR
     --preview-samples N  samples of the beauty renders (default 256)
     --no-beauty        with --preview: skip the slow path-traced beauty renders
@@ -29,8 +32,9 @@ Flags (all optional):
 
 Stages, in order: build the three modules, place the keyboard and its cable,
 check for intersections, find the faces a viewer can ever see, lay out the
-two lightmap atlases, bake "room", "lamp" and "screen" light into each, encode the
-maps, render the reflection image, strip unseen faces and export.
+two lightmap atlases, bake "room", "lamp" and "screen" light and the surface
+colour into each, encode the maps, render the reflection image, strip unseen
+faces and export.
 """
 import ctypes
 import json
@@ -72,20 +76,38 @@ RANGE_SKIP = ("Lamp_Shade",)        # objects ignored when choosing a map's rang
 # room + lamp * (lamp switch) + screen * (picture level).
 PASSES = ("room", "lamp", "screen")
 LM_NAME = "Lightmap"
+# Lengths in atlas pixels below are for a 2048 atlas and scale with --size.
 DILATE_PX = 12                      # margin grown around every island
 PACK_MARGIN_PX = 10.0               # gap the packer leaves around islands
+# The page first draws with the smallest of these, then swaps in the largest
+# its GPU can afford: the full atlas and its halvings, all on the same UVs.
+TIERS = 3
+TIER_MIN = 512
 
-# Noise filter applied to the baked maps before encoding: a Gaussian of this
-# sigma (texels), normalised by the object's own texel mask so nothing crosses
-# from one object to another (first matching name prefix wins).  Only objects
-# whose baked detail is lighting, not printed or grained colour.  The radius
-# (3 sigma) must stay below PACK_MARGIN_PX so islands of one object stay apart.
+# Bake samples per texel at 2048; a larger atlas takes proportionally fewer
+# (its texels are smaller, and the grain filter below covers the same patch
+# of surface), so the bake time does not grow with --size.
+SAMPLES_2048 = {"hero": 1024, "env": 2048}
+# Share of an atlas's samples each light pass gets: the window light is easy
+# and the picture's light is dim, the lamp's is neither.
+PASS_SAMPLES = {"room": 0.5, "lamp": 1.0, "screen": 0.5}
+# The colour bake has no light in it to be noisy, only edges to soften and
+# the occlusion lookup behind the terminal's grime.
+COLOR_SAMPLES = 64
+
+# Noise filter applied to the baked light (not to the surface colour, which
+# is baked apart from it and multiplied back in afterwards): a Gaussian of
+# this sigma, in texels of a 2048 atlas, weighted by the texel mask of the
+# objects that share that sigma (first matching name prefix wins, SMOOTH_REST
+# for the others).  The radius (3 sigma) must stay below PACK_MARGIN_PX: no
+# island is nearer than that to another, so nothing crosses between them.
 SMOOTH = (
-    ("NameplateText", 0.0), ("Nameplate", 0.0), ("Wall_Note", 0.0),
     ("Key_", 1.0), ("Collar", 1.0), ("Keyboard", 1.0), ("Housing", 1.0), ("Plinth", 1.0),
     ("SideControls", 1.0), ("PowerButton", 1.0), ("Kbd_Cable", 1.0),
-    ("Wall_Desk", 2.5), ("Floor", 2.5), ("Skirting", 1.5), ("Desk_Body", 1.5), ("Lamp_", 1.0),
+    ("Wall_Desk", 3.0), ("Wall_Left", 3.0), ("Floor", 3.0), ("Skirting", 1.5), ("Desk_Body", 1.5),
+    ("Lamp_", 1.0),
 )
+SMOOTH_REST = 0.5
 BACKING_MM = 2.0                    # ScreenBacking sits this far behind the glass
 
 # ---------------------------------------------------------------- viewing
@@ -109,6 +131,7 @@ CLOSEUPS = {
     "close_recess_chin": (Vector((0.07, -0.33, 0.22)), Vector((0.03, 0.03, 0.10)), 50.0, (1280, 720)),
     "close_keys": (Vector((-0.06, -0.50, 0.20)), Vector((-0.06, -0.225, 0.03)), 70.0, (1280, 720)),
     "close_desk_lamp": (Vector((0.22, -0.55, 0.33)), Vector((0.30, -0.03, 0.0)), 50.0, (1280, 720)),
+    "close_lamp_switch": (Vector((0.16, -0.50, 0.30)), Vector((0.366, 0.088, 0.012)), 200.0, (1280, 720)),
     "close_seam": (Vector((-0.27, -0.36, 0.33)), Vector((-0.145, 0.01, 0.275)), 100.0, (1280, 720)),
 }
 
@@ -132,7 +155,7 @@ DENSITY = (
     ("Key_", 1.25), ("LegendStrip", 1.3), ("Kbd_Feet", 0.5), ("Kbd_Cable", 0.7), ("Kbd_", 1.0),
     ("Keyboard", 1.0),
     ("Desk_Body", 0.45), ("Desk_Top", 0.5), ("Wall_Left", 0.06), ("Wall_Right", 0.06), ("Floor", 0.06),
-    ("Ceiling", 0.06), ("Skirting", 0.15), ("Lamp_Switch", 3.0), ("Lamp_Cord", 0.5), ("Lamp_", 1.0),
+    ("Ceiling", 0.06), ("Skirting", 0.15), ("Lamp_Switch", 3.0), ("Lamp_Cord", 0.8), ("Lamp_", 1.3),
     ("Wall_Note", 1.7), ("Mug", 2.0), ("Floppy", 1.3), ("Notepad", 1.3), ("Pen", 1.3), ("Binder", 1.3),
 )
 
@@ -920,8 +943,8 @@ def pack_raster(objs, state, size, grid=512):
         me.polygons.foreach_get("loop_total", totals)
         keep = np.repeat(st > 0, totals)
         uv[~keep] = 0.0
-        # a 1/16384 grid: a 1/8 texel at 2048, and the floats compress far better
-        uv = np.round(uv * 16384.0) / 16384.0
+        # a grid of 1/8 texel: the floats compress far better
+        uv = np.round(uv * (8.0 * size)) / (8.0 * size)
         set_uv(me, uv)
         if keep.any():
             lo = np.minimum(lo, uv[keep].min(axis=0))
@@ -966,7 +989,97 @@ def setup_bake_device(scene, samples):
     scene.cycles.sample_clamp_indirect = 4.0
 
 
-def bake_into(scene, objs, image):
+def _hash_string(text):
+    h = 0
+    for c in text.encode("utf-8"):
+        h = (h * 37 + c) & 0xFFFFFFFF
+    return h
+
+
+def _hash_uint2(kx, ky):
+    m = 0xFFFFFFFF
+
+    def rot(x, k):
+        return ((x << k) | (x >> (32 - k))) & m
+
+    a = b = c = (0xdeadbeef + (2 << 2) + 13) & m
+    a, b = (a + kx) & m, (b + ky) & m
+    c = ((c ^ b) - rot(b, 14)) & m
+    a = ((a ^ c) - rot(c, 11)) & m
+    b = ((b ^ a) - rot(a, 25)) & m
+    c = ((c ^ b) - rot(b, 16)) & m
+    a = ((a ^ c) - rot(c, 4)) & m
+    b = ((b ^ a) - rot(a, 14)) & m
+    c = ((c ^ b) - rot(b, 24)) & m
+    return c
+
+
+def object_random(name):
+    """The Object Info node's Random output for an object of this name, as
+    Cycles computes it (its hash_string and hash_uint2 over the name)."""
+    return _hash_uint2(_hash_string(name), 0) / float(0xFFFFFFFF)
+
+
+def joined_copy(objs, col, name):
+    """One mesh holding world-space copies of `objs`, for baking.
+
+    Blender bakes selected objects one at a time and sets up the whole image
+    again for each, which for the hundred-odd keys costs far more than the
+    samples do; one joined object bakes the same texels in one go.  Shading
+    that depends on the object (object texture coordinates, Object Info >
+    Random) is kept by storing both on the copies as attributes and reading
+    those in copies of the materials.  Returns (object, material copies)."""
+    copies, mats = [], {}
+    for o in objs:
+        c = o.copy()
+        c.data = o.data.copy()
+        col.objects.link(c)
+        c.parent = None
+        c.matrix_world = o.matrix_world.copy()
+        me = c.data
+        co = np.empty(len(me.vertices) * 3, np.float32)
+        me.vertices.foreach_get("co", co)
+        me.attributes.new("vt_ocoord", "FLOAT_VECTOR", "POINT").data.foreach_set("vector", co)
+        me.attributes.new("vt_orand", "FLOAT", "POINT").data.foreach_set(
+            "value", np.full(len(me.vertices), object_random(o.name), np.float32))
+        for slot in c.material_slots:
+            src = slot.material
+            if src not in mats:
+                mats[src] = src.copy()
+                nt = mats[src].node_tree
+                for node in list(nt.nodes):
+                    if node.bl_idname == "ShaderNodeTexCoord" and node.object is None:
+                        out, attr, sock = node.outputs["Object"], "vt_ocoord", "Vector"
+                    elif node.bl_idname == "ShaderNodeObjectInfo":
+                        out, attr, sock = node.outputs["Random"], "vt_orand", "Fac"
+                        used = [s.name for s in node.outputs if s.is_linked and s.name != "Random"]
+                        assert not used, "%s reads Object Info > %s, which a joined bake loses" % (src.name, used)
+                    else:
+                        continue
+                    if not out.is_linked:
+                        continue
+                    an = nt.nodes.new("ShaderNodeAttribute")
+                    an.attribute_type = "GEOMETRY"
+                    an.attribute_name = attr
+                    for link in list(out.links):
+                        to = link.to_socket
+                        nt.links.remove(link)
+                        nt.links.new(an.outputs[sock], to)
+            slot.material = mats[src]
+        copies.append(c)
+    bpy.ops.object.select_all(action="DESELECT")
+    for c in copies:
+        c.select_set(True)
+    bpy.context.view_layer.objects.active = copies[0]
+    bpy.ops.object.join()
+    copies[0].name = name
+    copies[0]["role"] = "proxy"
+    return copies[0], list(mats.values())
+
+
+def bake_into(scene, objs, image, passes=("DIRECT", "INDIRECT")):
+    """Diffuse bake.  The default is the light alone, with the surface colour
+    divided out; passes=("COLOR",) is that colour."""
     for o in objs:
         for slot in o.material_slots:
             nt = slot.material.node_tree
@@ -982,7 +1095,7 @@ def bake_into(scene, objs, image):
     for o in objs:
         o.select_set(True)
     bpy.context.view_layer.objects.active = objs[0]
-    bpy.ops.object.bake(type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT", "COLOR"}, margin=0,
+    bpy.ops.object.bake(type="DIFFUSE", pass_filter=set(passes), margin=0,
                         use_clear=True, target="IMAGE_TEXTURES", uv_layer=LM_NAME)
 
 
@@ -1025,60 +1138,87 @@ def raster_mask(objs, state, size):
     return mask
 
 
+def raster_labels(objs, state, size):
+    """Per texel, the index in `objs` of the object whose shipped lightmap
+    triangles cover its centre, or -1."""
+    labels = np.full((size, size), -1, np.int16)
+    for i, o in enumerate(objs):
+        labels[raster_mask([o], state, size)] = i
+    return labels
+
+
+def label_mask(labels, objs, keep):
+    """Texels of the objects in `keep`."""
+    ids = [i for i, o in enumerate(objs) if o in keep]
+    return np.isin(labels, ids) if ids else np.zeros(labels.shape, bool)
+
+
 def dilate(rgb, mask, n):
     """Grow colour outward from covered texels by n pixels (bake margin)."""
     rgb = rgb.astype(np.float32).copy()
     rgb[~mask] = 0.0
     filled = mask.copy()
     h, w = mask.shape
+    around = [(dy, dx, 1.0 if (dy == 0 or dx == 0) else 0.7)
+              for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx]
     for _ in range(n):
-        pr = np.pad(rgb, ((1, 1), (1, 1), (0, 0)))
-        pf = np.pad(filled, 1).astype(np.float32)
-        acc = np.zeros_like(rgb)
-        cnt = np.zeros((h, w), np.float32)
-        for dy in (0, 1, 2):
-            for dx in (0, 1, 2):
-                if dy == 1 and dx == 1:
-                    continue
-                wgt = 1.0 if (dy == 1 or dx == 1) else 0.7
-                acc += wgt * pr[dy:dy + h, dx:dx + w]
-                cnt += wgt * pf[dy:dy + h, dx:dx + w]
-        new = (~filled) & (cnt > 0)
-        rgb[new] = acc[new] / cnt[new][:, None]
-        filled |= new
+        # only the ring of texels next to the filled ones changes
+        ys, xs = np.nonzero(grow_mask(filled, 1) & ~filled)
+        if len(ys) == 0:
+            break
+        acc = np.zeros((len(ys), 3), np.float32)
+        cnt = np.zeros(len(ys), np.float32)
+        for dy, dx, wgt in around:
+            yy, xx = ys + dy, xs + dx
+            ok = (yy >= 0) & (yy < h) & (xx >= 0) & (xx < w)
+            yy, xx = np.clip(yy, 0, h - 1), np.clip(xx, 0, w - 1)
+            f = np.where(ok & filled[yy, xx], np.float32(wgt), np.float32(0.0))
+            acc += rgb[yy, xx] * f[:, None]
+            cnt += f
+        rgb[ys, xs] = acc / cnt[:, None]
+        filled[ys, xs] = True
     return rgb, filled
+
+
+def halve(rgb, times):
+    """Box-filter an atlas down by 2 ** times."""
+    f = 2 ** times
+    h, w = rgb.shape[:2]
+    return rgb.reshape(h // f, f, w // f, f, rgb.shape[2]).mean(axis=(1, 3))
 
 
 def smooth_sigma(name):
     for prefix, s in SMOOTH:
         if name.startswith(prefix):
             return s
-    return 0.0
+    return SMOOTH_REST
 
 
-def smooth_objects(rgb, covered, objs, state, size):
-    """Mask-normalised Gaussian per object (see SMOOTH).  Returns a copy."""
-    out = rgb.astype(np.float32).copy()
-    n = 0
-    for o in objs:
-        sigma = smooth_sigma(o.name)
-        if sigma <= 0.0:
-            continue
-        m = raster_mask([o], state, size) & covered
-        ys, xs = np.nonzero(m)
+def smooth_light(light, covered, labels, objs, size):
+    """Mask-normalised Gaussian over the baked light (see SMOOTH): one pass
+    per distinct sigma, over the texels of the objects that share it.
+    Returns a copy and the number of objects filtered."""
+    out = light.astype(np.float32).copy()
+    sigmas = [smooth_sigma(o.name) for o in objs]
+    kinds = sorted(set(s for s in sigmas if s > 0.0))
+    # label -1 (no object) reads the extra last entry
+    kind_of = np.array([kinds.index(s) if s > 0.0 else -1 for s in sigmas] + [-1], np.int8)[labels]
+    for k, sigma in enumerate(kinds):
+        m = (kind_of == k) & covered
+        ys, xs = np.flatnonzero(m.any(axis=1)), np.flatnonzero(m.any(axis=0))
         if len(ys) == 0:
             continue
-        r = int(math.ceil(3 * sigma))
-        y0, y1 = max(ys.min() - r, 0), min(ys.max() + r + 1, size)
-        x0, x1 = max(xs.min() - r, 0), min(xs.max() + r + 1, size)
+        px = sigma * size / 2048.0
+        r = int(math.ceil(3 * px))
+        y0, y1 = max(ys[0] - r, 0), min(ys[-1] + r + 1, size)
+        x0, x1 = max(xs[0] - r, 0), min(xs[-1] + r + 1, size)
         mm = m[y0:y1, x0:x1]
         w = mm.astype(np.float32)
-        num = gaussian_blur(rgb[y0:y1, x0:x1] * w[..., None], sigma, mode="constant")
-        den = gaussian_blur(w, sigma, mode="constant")
+        num = gaussian_blur(light[y0:y1, x0:x1] * w[..., None], px, mode="constant")
+        den = gaussian_blur(w, px, mode="constant")
         sub = out[y0:y1, x0:x1]
         sub[mm] = num[mm] / np.maximum(den[mm], 1e-6)[:, None]
-        n += 1
-    return out, n
+    return out, sum(1 for s in sigmas if s > 0.0)
 
 
 def noise_metric(rgb, mask):
@@ -1155,7 +1295,11 @@ def encode_map(rgb, mask, path, label, stat_mask=None):
     top = float(stat.max())
     # when the brightest texel is not far above the percentile, keep it whole:
     # that costs at most about half a bit and no real highlight is flattened
-    rng = float("%.4g" % (top * 1.004 if top <= 1.5 * p999 else p999 * 1.012))
+    rng = top * 1.004 if top <= 1.5 * p999 else p999 * 1.012
+    # A small bright object (the lamp switch's pale rocker, right under the
+    # bulb) is too few texels to move that percentile, but it is no stray
+    # speck either. Keep it whole as far as the screen can show it: 1.0.
+    rng = float("%.4g" % max(rng, min(float(np.percentile(stat, 99.995)), 1.0) * 1.004))
     b = to_bytes(rgb, rng)
     back = save_bytes(b, path)
     with open(path, "rb") as f:
@@ -1579,7 +1723,7 @@ def accessor_array(js, binary, mo, index, cache):
     return np.ascontiguousarray(rows).view(dt).reshape(acc["count"], ncomp)
 
 
-def verify_glb(path, expect):
+def verify_glb(path, expect, size):
     """expect: {node name: object}.  Checks attributes and decoded positions
     / lightmap UVs against the Blender meshes.  Returns a stats dict."""
     js, binary = parse_glb(path)
@@ -1590,7 +1734,7 @@ def verify_glb(path, expect):
              "images": len(js.get("images", [])), "textures": len(js.get("textures", [])),
              "materials": [(m.get("name"), m.get("doubleSided", False)) for m in js.get("materials", [])],
              "scene_extras": js["scenes"][js.get("scene", 0)].get("extras", {}),
-             "nodes": [], "triangles": 0, "vertices": 0, "max_pos_err_mm": 0.0, "max_uv1_err_texel_2048": 0.0}
+             "nodes": [], "triangles": 0, "vertices": 0, "max_pos_err_mm": 0.0, "max_uv1_err_texel": 0.0}
     compressed = 0
     for node in js["nodes"]:
         name = node.get("name")
@@ -1633,8 +1777,8 @@ def verify_glb(path, expect):
                         ku.insert((u, 1.0 - v, 0.0), i)
                     ku.balance()
                     uerr = max(ku.find((float(u), float(v), 0.0))[2] for u, v in np.concatenate(uv1_all).tolist())
-                    row["uv1_err_texel"] = uerr * 2048.0
-                    stats["max_uv1_err_texel_2048"] = max(stats["max_uv1_err_texel_2048"], uerr * 2048.0)
+                    row["uv1_err_texel"] = uerr * size
+                    stats["max_uv1_err_texel"] = max(stats["max_uv1_err_texel"], uerr * size)
         stats["nodes"].append(row)
     for bv in js["bufferViews"]:
         if "EXT_meshopt_compression" in (bv.get("extensions") or {}):
@@ -1683,9 +1827,13 @@ def reflection_pass(scene, tube, glass, args, bake_dir, out_dir, led_bsdf, led_s
 
 def main():
     args = vc.script_args()
-    samples = arg(args, "--samples", 1024, int)
-    env_samples = arg(args, "--env-samples", samples * 4, int)
-    size = arg(args, "--size", 2048, int)
+    size = arg(args, "--size", 4096, int)
+    per_texel = (2048.0 / size) ** 2
+    samples = arg(args, "--samples", max(1, round(SAMPLES_2048["hero"] * per_texel)), int)
+    env_samples = arg(args, "--env-samples", max(1, round(samples * SAMPLES_2048["env"] / SAMPLES_2048["hero"])), int)
+    atlas_samples = {"hero": samples, "env": env_samples}
+    tiers = [size >> i for i in range(TIERS) if (size >> i) >= TIER_MIN and size % (1 << i) == 0]
+    dilate_px = int(round(DILATE_PX * size / 2048.0))
     out_dir = arg(args, "--out", os.path.join(REPO, "src", "assets"))
     bake_dir = arg(args, "--bake-dir", os.path.join(tempfile.gettempdir(), "vt_bake"))
     preview = arg(args, "--preview")
@@ -1784,7 +1932,7 @@ def main():
             if o.name == "Notepad":
                 grow = grow | tiny          # the spiral wire: point samples miss its facets
             st = grow.astype(np.int8)
-        if o is button or o in led_objs or o.name.startswith("Nameplate") or o.name == "Lamp_Switch":
+        if o is button or o in led_objs or o.name.startswith(("Nameplate", "Lamp_Switch")):
             st[:] = 1                       # small moving / recoloured parts keep every face
         if o.name in WARPS:
             spec = WARPS[o.name]
@@ -1844,10 +1992,11 @@ def main():
         set_uv(me, np.zeros((len(me.loops), 2)))
     checksum = {n: uv_checksum(objs) for n, objs in atlases.items()}
 
-    masks = {}
+    masks, labels = {}, {}
     for name, objs in atlases.items():
         t0 = time.time()
-        masks[name] = raster_mask(objs, state, size)
+        labels[name] = raster_labels(objs, state, size)
+        masks[name] = labels[name] >= 0
         log("mask %s: %.1f%% of the atlas covered (%.0f s)" % (name, 100 * masks[name].mean(), time.time() - t0))
 
     # Texels left out when a map's range is chosen: the inside of the lamp
@@ -1857,105 +2006,167 @@ def main():
     range_skip = {}
     for name, objs in atlases.items():
         skip = [o for o in objs if o.name in RANGE_SKIP]
-        range_skip[name] = grow_mask(raster_mask(skip, state, size), 2) if skip else np.zeros((size, size), bool)
+        range_skip[name] = grow_mask(label_mask(labels[name], objs, skip), 2)
 
     if "--blend" in args:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.join(bake_dir, "scene.blend"))
 
     # ---------------------------------------------------------- bake
+    # Masters, per atlas: the light of each pass with the surface colour
+    # divided out, and that colour.  An atlas whose layout and settings are
+    # those of the masters on disk need not be baked again.
     meta_path = os.path.join(bake_dir, "bake_meta.json")
-    raw = {}
-    if skip_bake:
+    pass_samples = {name: {pas: max(1, round(atlas_samples[name] * PASS_SAMPLES[pas])) for pas in PASSES}
+                    for name in atlases}
+    want = {name: {"checksum": checksum[name], "size": size, "samples": pass_samples[name]} for name in atlases}
+    have = {}
+    if os.path.exists(meta_path):
         with open(meta_path) as f:
-            meta = json.load(f)
-        if meta.get("checksum") != checksum or meta.get("size") != size:
-            raise RuntimeError("--skip-bake: the lightmap layout changed since the masters were baked")
-        for name in atlases:
-            for pas in PASSES:
-                raw[(name, pas)] = load_image(os.path.join(bake_dir, "raw_%s_%s.exr" % (name, pas)))
-        log("reused baked masters from", bake_dir, "(%d spp)" % meta.get("samples", -1))
-        report["samples"] = meta.get("samples")
+            have = json.load(f).get("atlases", {})
+    layers = PASSES + ("color",)
+
+    def master(name, layer):
+        return os.path.join(bake_dir, "raw_%s_%s.exr" % (name, layer))
+
+    def same_layout(name):
+        return (name in have and have[name].get("checksum") == checksum[name] and have[name].get("size") == size
+                and all(os.path.exists(master(name, layer)) for layer in layers))
+
+    if skip_bake:
+        stale = [name for name in atlases if not same_layout(name)]
+        if stale:
+            raise RuntimeError("--skip-bake: no masters for this lightmap layout in %s (%s)" % (
+                bake_dir, ", ".join(stale)))
+        reuse = set(atlases)
+    elif "--reuse-unchanged" in args:
+        reuse = set(name for name in atlases if same_layout(name) and have[name] == want[name])
     else:
+        reuse = set()
+    raw, covered = {}, {}
+
+    def take(name, layer, arr):
+        """Keep a baked layer's colour; a texel is covered only if every layer wrote it."""
+        alpha = arr[..., 3] > 0
+        covered[name] = alpha if name not in covered else covered[name] & alpha
+        raw[(name, layer)] = np.nan_to_num(arr[..., :3], nan=0.0, posinf=0.0, neginf=0.0)
+        return alpha
+
+    for name in sorted(reuse):
+        for layer in layers:
+            take(name, layer, load_image(master(name, layer)))
+        want[name] = have[name]
+        log("reused baked masters of %s from %s (%s spp)" % (name, bake_dir, have[name].get("samples")))
+    todo = [name for name in atlases if name not in reuse]
+    if todo:
         setup_bake_device(scene, samples)
         led_bsdf.inputs["Emission Strength"].default_value = 0.0
         light_objs = [L["window_light"], L["lamp_light"]]
         # What each pass lights the set with. Light transport is linear in
         # its sources, so the passes add back up to the whole room.
         sources = {"room": [L["window_light"], panes], "lamp": [L["lamp_light"], bulb], "screen": []}
-        for pas in PASSES:
-            scene.world = L["world"] if pas == "room" else black_world()
-            glass_picture((1, 1, 1), 1.0 if pas == "screen" else 0.0)
-            for o in light_objs + [panes, bulb]:
-                o.hide_render = o not in sources[pas]
-            for name, objs in atlases.items():
+        # each atlas is baked as one joined stand-in for its objects
+        stand_ins, spare_mats = {}, []
+        for name in todo:
+            stand_ins[name], mats = joined_copy(atlases[name], col, "Bake_" + name)
+            spare_mats += mats
+            for o in atlases[name]:
+                o.hide_render = True
+        for layer in layers:
+            if layer != "color":
+                scene.world = L["world"] if layer == "room" else black_world()
+                glass_picture((1, 1, 1), 1.0 if layer == "screen" else 0.0)
+                for o in light_objs + [panes, bulb]:
+                    o.hide_render = o not in sources[layer]
+            for name in todo:
+                objs = atlases[name]
                 t0 = time.time()
-                img = bpy.data.images.new("bake_%s_%s" % (name, pas), size, size, alpha=True, float_buffer=True)
-                spp = env_samples if name == "env" else samples
+                img = bpy.data.images.new("bake_%s_%s" % (name, layer), size, size, alpha=True, float_buffer=True)
+                spp = COLOR_SAMPLES if layer == "color" else pass_samples[name][layer]
                 scene.cycles.samples = spp
-                bake_into(scene, objs, img)
+                bake_into(scene, [stand_ins[name]], img, ("COLOR",) if layer == "color" else ("DIRECT", "INDIRECT"))
                 arr = image_array(img)
-                alpha = arr[..., 3] > 0
-                lit = arr[..., :3].max(axis=2) > 0
+                alpha = take(name, layer, arr)
+                lit = raw[(name, layer)].max(axis=2) > 0
                 log("  alpha>0 %.2f%%  rgb>0 %.2f%%  mask %.2f%%  mask&~alpha %d  alpha&~mask %d  mask&~rgb %d" % (
                     100 * alpha.mean(), 100 * lit.mean(), 100 * masks[name].mean(),
                     int((masks[name] & ~alpha).sum()), int((alpha & ~masks[name]).sum()),
                     int((masks[name] & ~lit).sum())))
-                raw[(name, pas)] = arr.copy()
-                save_exr(arr, os.path.join(bake_dir, "raw_%s_%s.exr" % (name, pas)))
+                save_exr(arr, master(name, layer))
                 bpy.data.images.remove(img)
-                log("BAKE %s/%s: %d objects, %d spp, %d px, %.0f s" % (name, pas, len(objs), spp, size, time.time() - t0))
+                log("BAKE %s/%s: %d objects, %d spp, %d px, %.0f s" % (name, layer, len(objs), spp, size, time.time() - t0))
+        for name in todo:
+            me = stand_ins[name].data
+            bpy.data.objects.remove(stand_ins[name])
+            bpy.data.meshes.remove(me)
+            for o in atlases[name]:
+                o.hide_render = False
+        for m in spare_mats:
+            bpy.data.materials.remove(m)
         scene.world = L["world"]
         glass_picture((1, 1, 1), 0.0)
         for o in light_objs + [panes, bulb]:
             o.hide_render = False
         led_bsdf.inputs["Emission Strength"].default_value = led_strength
         with open(meta_path, "w") as f:
-            json.dump({"checksum": checksum, "size": size, "samples": samples, "env_samples": env_samples,
-                   "passes": list(PASSES)}, f)
+            json.dump({"atlases": want}, f)
+    report["samples"] = {name: want[name].get("samples") for name in atlases}
 
     # ---------------------------------------------------------- encode
     enc = {}
     files = {}
+    for fn in os.listdir(out_dir):
+        if fn.startswith("lm_") and fn.endswith(".webp"):
+            os.remove(os.path.join(out_dir, fn))
     # A texel counts as covered only if the layout says so AND Cycles wrote
-    # it in both passes (the baked image's alpha); everything else is margin.
+    # it in every layer (the baked image's alpha); everything else is margin.
     for name in atlases:
-        for pas in PASSES:
-            masks[name] = masks[name] & (raw[(name, pas)][..., 3] > 0)
+        masks[name] = masks[name] & covered[name]
     probes = {"hero": {"keys": [o for o in hero if o.name.startswith("Key_")],
                        "Collar": [o for o in hero if o.name == "Collar"]},
               "env": {"Wall_Desk": [o for o in env if o.name == "Wall_Desk"],
                       "Desk_Top": [o for o in env if o.name == "Desk_Top"]}}
-    probe_masks = {(name, k): grow_mask(~(raster_mask(objs, state, size) & masks[name]), 1) == 0
+    probe_masks = {(name, k): grow_mask(~(label_mask(labels[name], atlases[name], objs) & masks[name]), 1) == 0
                    for name, d in probes.items() for k, objs in d.items() if objs}
     grown_maps = {}
     report["noise"] = {}
-    for (name, pas), rgba in raw.items():
-        rgb = np.nan_to_num(rgba[..., :3], nan=0.0, posinf=0.0, neginf=0.0)
-        if "--no-smooth" not in args:
-            before = rgb
-            rgb, n_s = smooth_objects(rgb, masks[name], atlases[name], state, size)
-            for (an, k), pm in probe_masks.items():
-                if an == name:
-                    a, b = noise_metric(before, pm), noise_metric(rgb, pm)
-                    report["noise"]["%s_%s_%s" % (name, pas, k)] = [a, b]
-                    log("NOISE %s/%s %-10s relative grain %.2f%% -> %.2f%% (%d objects filtered)" % (
-                        name, pas, k, 100 * a, 100 * b, n_s))
-        grown, _ = dilate(rgb, masks[name], DILATE_PX)
-        grown_maps[(name, pas)] = grown
-        save_exr(grown, os.path.join(bake_dir, "lm_%s_%s.exr" % (name, pas)))
-        path = os.path.join(out_dir, "lm_%s_%s.webp" % (name, pas))
-        enc[(name, pas)] = encode_map(grown, masks[name], path, "%s/%s" % (name, pas),
-                                      masks[name] & ~range_skip[name])
-        files[(name, pas)] = path
-        over = grown.max(axis=2) > enc[(name, pas)]["range"]
-        if (over & masks[name]).any():
-            rows = []
-            for o in atlases[name]:
-                m = raster_mask([o], state, size) & masks[name]
-                if (m & over).any():
-                    rows.append((o.name, int((m & over).sum()), round(float(grown[m].max()), 3)))
-            enc[(name, pas)]["clipped_by_object"] = rows
-            log("CLIP %s/%s (object, texels above range, object max): %s" % (name, pas, rows))
+    for name in atlases:
+        color = raw.pop((name, "color"))
+        for pas in PASSES:
+            t0 = time.time()
+            light = raw.pop((name, pas))
+            rgb = light * color
+            if "--no-smooth" not in args:
+                before = rgb
+                light, n_s = smooth_light(light, masks[name], labels[name], atlases[name], size)
+                rgb = light * color
+                for (an, k), pm in probe_masks.items():
+                    if an == name:
+                        a, b = noise_metric(before, pm), noise_metric(rgb, pm)
+                        report["noise"]["%s_%s_%s" % (name, pas, k)] = [a, b]
+                        log("NOISE %s/%s %-10s relative grain %.2f%% -> %.2f%% (%d objects filtered)" % (
+                            name, pas, k, 100 * a, 100 * b, n_s))
+            grown, _ = dilate(rgb, masks[name], dilate_px)
+            grown_maps[(name, pas)] = grown
+            save_exr(grown, os.path.join(bake_dir, "lm_%s_%s.exr" % (name, pas)))
+            path = os.path.join(out_dir, "lm_%s_%s_%d.webp" % (name, pas, size))
+            enc[(name, pas)] = encode_map(grown, masks[name], path, "%s/%s" % (name, pas),
+                                          masks[name] & ~range_skip[name])
+            files[(name, pas, size)] = path
+            # the smaller tiers: the same texels averaged, the same range
+            enc[(name, pas)]["tier_bytes"] = {str(size): enc[(name, pas)]["bytes"]}
+            for i, tier in enumerate(tiers[1:], 1):
+                files[(name, pas, tier)] = os.path.join(out_dir, "lm_%s_%s_%d.webp" % (name, pas, tier))
+                save_bytes(to_bytes(halve(grown, i), enc[(name, pas)]["range"]), files[(name, pas, tier)])
+                enc[(name, pas)]["tier_bytes"][str(tier)] = os.path.getsize(files[(name, pas, tier)])
+            over = grown.max(axis=2) > enc[(name, pas)]["range"]
+            if (over & masks[name]).any():
+                rows = []
+                for i in np.unique(labels[name][over & masks[name]]):
+                    m = (labels[name] == i) & masks[name]
+                    rows.append((atlases[name][i].name, int((m & over).sum()), round(float(grown[m].max()), 3)))
+                enc[(name, pas)]["clipped_by_object"] = rows
+                log("CLIP %s/%s (object, texels above range, object max): %s" % (name, pas, rows))
+            log("encoded %s/%s, tiers %s (%.0f s)" % (name, pas, enc[(name, pas)]["tier_bytes"], time.time() - t0))
     report["encode"] = {"%s_%s" % k: v for k, v in enc.items()}
 
     # ---------------------------------------------------------- reflection
@@ -2017,6 +2228,7 @@ def main():
     for k, v in ranges.items():
         scene[k] = v
     scene["lightmap_size"] = size
+    scene["lightmap_sizes"] = sorted(tiers)
     scene["picture_scale"] = [0.88, 0.84]
     scene["reflect_fov_deg"] = 90.0
     scene["glass_light"] = [round(c, 5) for c in glass_light]
@@ -2055,9 +2267,9 @@ def main():
     if preview:
         t0 = time.time()
         for name, objs in atlases.items():
-            mat = look_material("Look_" + name, files[(name, "room")], files[(name, "screen")],
+            mat = look_material("Look_" + name, files[(name, "room", size)], files[(name, "screen", size)],
                                 enc[(name, "room")]["range"], enc[(name, "screen")]["range"],
-                                files[(name, "lamp")], enc[(name, "lamp")]["range"])
+                                files[(name, "lamp", size)], enc[(name, "lamp")]["range"])
             for o in objs:
                 set_single_material(o, mat)
         set_single_material(T["PowerLED"], flat_material("Look_PowerLED", tuple(c * 0.7 for c in vc.srgb("#58E84A"))))
@@ -2122,28 +2334,27 @@ def main():
         noglass["close_recess_chin"] = CLOSEUPS["close_recess_chin"]
         render_views(scene, noglass, preview, "noglass", 24, False)
         glass.hide_render = False
-        # would the env atlas survive at half size?
-        half = {}
-        for pas in PASSES:
-            g = grown_maps[("env", pas)]
-            g = g.reshape(size // 2, 2, size // 2, 2, 3).mean(axis=(1, 3))
-            half[pas] = os.path.join(bake_dir, "lm_env_%s_half.webp" % pas)
-            save_bytes(to_bytes(g, enc[("env", pas)]["range"]), half[pas])
-        hm = look_material("Look_env_half", half["room"], half["screen"],
-                           enc[("env", "room")]["range"], enc[("env", "screen")]["range"],
-                           half["lamp"], enc[("env", "lamp")]["range"])
-        full = {o.name: o.data.materials[0] for o in env}
-        for o in env:
-            set_single_material(o, hm)
-        half_views = {k: allv[k] for k in ("seat28", "lookdown", "close_desk_lamp", "close_keys")}
-        render_views(scene, half_views, preview, "bakedhalf", 24, False)
-        for o in env:
-            set_single_material(o, full[o.name])
-        for v in half_views:
-            c = compare_png(os.path.join(preview, "baked_%s.png" % v), os.path.join(preview, "bakedhalf_%s.png" % v))
-            report["half_env_" + v] = c
-            log("HALF-ENV %s full vs half-size env atlas: mean abs diff %s, p95 %.2f (sRGB8)" % (
-                v, [round(x, 2) for x in c["mean_abs_diff_srgb8"]], c["p95_abs_diff_srgb8"]))
+        # what the smaller tiers cost: the same views drawn with them
+        full = {o.name: o.data.materials[0] for objs in atlases.values() for o in objs}
+        tier_views = {k: allv[k] for k in ("seat28", "lookdown", "close_desk_lamp", "close_keys")}
+        for tier in tiers[1:]:
+            for name, objs in atlases.items():
+                tm = look_material("Look_%s_%d" % (name, tier), files[(name, "room", tier)],
+                                   files[(name, "screen", tier)], enc[(name, "room")]["range"],
+                                   enc[(name, "screen")]["range"], files[(name, "lamp", tier)],
+                                   enc[(name, "lamp")]["range"])
+                for o in objs:
+                    set_single_material(o, tm)
+            render_views(scene, tier_views, preview, "baked%d" % tier, 24, False)
+            for v in tier_views:
+                c = compare_png(os.path.join(preview, "baked_%s.png" % v),
+                                os.path.join(preview, "baked%d_%s.png" % (tier, v)))
+                report["tier_%d_%s" % (tier, v)] = c
+                log("TIER %d %s against the full atlases: mean abs diff %s, p95 %.2f (sRGB8)" % (
+                    tier, v, [round(x, 2) for x in c["mean_abs_diff_srgb8"]], c["p95_abs_diff_srgb8"]))
+        for objs in atlases.values():
+            for o in objs:
+                set_single_material(o, full[o.name])
         for o in hidden:
             o.hide_render = False
         scene.world = L["world"]
@@ -2161,7 +2372,9 @@ def main():
                 report["compare_" + v] = c
                 log("COMPARE %s beauty vs baked: %s" % (v, c))
         # atlas views
-        for (name, pas), path in files.items():
+        for (name, pas, tier), path in files.items():
+            if tier != size:
+                continue
             b = np.round(load_image(path, raw=True)[..., :3] * 255).astype(np.uint8)
             save_bytes(b, os.path.join(preview, "atlas_%s_%s.png" % (name, pas)), fmt="PNG")
             if pas == "room":
@@ -2197,9 +2410,10 @@ def main():
             export_cameras=False, export_lights=False, export_animations=False,
             export_materials="EXPORT", export_image_format="NONE",
             export_meshopt_compression_enable=True, export_meshopt_extension="EXT_meshopt_compression")
-        stats = verify_glb(glb, {o.name: o for o in keep_objs})
+        stats = verify_glb(glb, {o.name: o for o in keep_objs}, size)
         names = [n["name"] for n in stats["nodes"]]
-        for must in ("TubeRef", "Cam_Seat", "Cam_Target", "PowerButton", "PowerLED", "Keyboard", "Lamp_Switch"):
+        for must in ("TubeRef", "Cam_Seat", "Cam_Target", "PowerButton", "PowerLED", "Keyboard", "Lamp_Switch",
+                     "Lamp_SwitchBody"):
             assert must in names, must + " missing from the glb"
         assert "GlassProxy" not in names
         assert all(n["extras"].get("role") != "proxy" for n in stats["nodes"])
@@ -2211,7 +2425,7 @@ def main():
         log("GLB %d bytes, %d nodes, %d triangles, %d vertices, max position error %.4f mm, "
             "max uv1 error %.4f texel, %d of %d bufferViews meshopt" % (
                 stats["file_bytes"], len(stats["nodes"]), stats["triangles"], stats["vertices"],
-                stats["max_pos_err_mm"], stats["max_uv1_err_texel_2048"], stats["compressed_bufferviews"],
+                stats["max_pos_err_mm"], stats["max_uv1_err_texel"], stats["compressed_bufferviews"],
                 stats["bufferviews"]))
         log("GLB extensions used %s required %s materials %s" % (stats["extensionsUsed"], stats["extensionsRequired"], stats["materials"]))
         log("GLB scene extras %s" % stats["scene_extras"])

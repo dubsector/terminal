@@ -27,7 +27,7 @@ import {
 } from "three";
 import { RASTER, RASTER_GLSL, faceToRaster } from "./gl/raster.js";
 import { createPainter } from "./gl/painter.js";
-import { loadModel, buildModel } from "./gl/model.js";
+import { loadModel, buildModel, pickMapSize } from "./gl/model.js";
 import { drawLegends } from "./gl/legends.js";
 import { createKeys } from "./gl/keys.js";
 import { createRig } from "./gl/camera.js";
@@ -82,8 +82,9 @@ var SCREEN_GLOW_LAG_S = 0.3;
 
 // The power switch latches in over about this long.
 var BUTTON_PRESS_S = 0.08;
-// The desk lamp's push switch goes down and comes back up in this long.
-var LAMP_SWITCH_PRESS_S = 0.18;
+// The rocker of the desk lamp's cord switch tips over in this long: slowly
+// at first, against its spring, then all at once.
+var LAMP_SWITCH_FLIP_S = 0.12;
 // Time constants of the lamp's light coming up and dying away: a small
 // incandescent filament heats in a few hundredths of a second and glows on
 // for a little longer as it cools.
@@ -452,17 +453,49 @@ function start(crt) {
     pickable = [face, model.collider, model.lampCollider].concat(model.meshes);
     model.setPowerLed(powerState === "on" || powerState === "warming");
     model.setButton(buttonPos);
+    model.setLampSwitch(rockerPos);
     layout();
 
     // Decode and upload the big textures now rather than in the first
     // visible frame.
-    [legends.keys, legends.strip, model.reflect.texture].concat(props.textures).forEach(function (t) {
+    [legends.keys, legends.strip, model.reflect.texture].concat(props.textures(), mapTextures(loaded.maps)).forEach(function (t) {
       renderer.initTexture(t);
     });
-    for (var name in loaded.maps) {
-      renderer.initTexture(loaded.maps[name].room);
-      renderer.initTexture(loaded.maps[name].screen);
+  }
+
+  function mapTextures(maps) {
+    var list = [];
+    for (var name in maps) {
+      for (var pass in maps[name]) list.push(maps[name][pass]);
     }
+    return list;
+  }
+
+  // The light maps at their final size have arrived: upload them one a
+  // frame, so a 64 MB texture never lands in the same frame as another,
+  // then draw with them and let the first set go.
+  function sharpen(load, maps) {
+    var queue = mapTextures(maps);
+    function next() {
+      if (dead) return;
+      if (queue.length) {
+        renderer.initTexture(queue.shift());
+        uploadId = requestAnimationFrame(next);
+        return;
+      }
+      var old = model.maps;
+      model.setMaps(maps);
+      props.relight();
+      props.textures().forEach(function (t) {
+        renderer.initTexture(t);
+      });
+      load.release(old);
+      wake(0.2);
+    }
+    var uploadId = requestAnimationFrame(next);
+    cleanup.push(function () {
+      cancelAnimationFrame(uploadId);
+    });
   }
 
   function layout() {
@@ -494,14 +527,18 @@ function start(crt) {
   var buttonPos = buttonGoal;
 
   // --- desk lamp -----------------------------------------------------------
-  // An inline rocker switch on the lamp cord. Its light is a separate baked layer, so
-  // switching it only scales that layer; the glass's reflection and the
-  // room light on it are swapped for the lamp-off versions too.
+  // An inline rocker switch on the lamp cord, which tips over and stays there.
+  // Its light is a separate baked layer, so switching it only scales that
+  // layer; the glass's reflection and the room light on it are swapped for
+  // the lamp-off versions too.
   var lampOn = true;
   var lampLevel = 1;
-  // Pressed travel of the cap, 0..1, and how long since it was pressed.
-  var lampSwitchPos = 0;
-  var lampSwitchT = -1;
+  // Which way the rocker has been pushed, where it is (0 = tipped to off,
+  // 1 = tipped to on), and where it was and how long ago when last pushed.
+  var rockerOn = true;
+  var rockerPos = 1;
+  var rockerFrom = 1;
+  var rockerT = -1;
 
   function applyLamp() {
     var u = faceMat.uniforms;
@@ -516,24 +553,23 @@ function start(crt) {
   }
 
   function toggleLamp() {
-    lampOn = !lampOn;
-    lampSwitchT = 0;
+    rockerOn = !rockerOn;
+    rockerFrom = rockerPos;
+    rockerT = 0;
     wake(0.5);
   }
 
   // Returns true while anything is still moving.
   function stepLamp(dt) {
     var moving = false;
-    if (lampSwitchT >= 0) {
-      // Down quickly, back up a little slower: a click, not a latch.
-      lampSwitchT += dt;
-      var t = lampSwitchT / LAMP_SWITCH_PRESS_S;
-      lampSwitchPos = t < 0.4 ? t / 0.4 : Math.max(0, 1 - (t - 0.4) / 0.6);
-      if (t >= 1) {
-        lampSwitchT = -1;
-        lampSwitchPos = 0;
-      }
-      model.setLampSwitch(lampSwitchPos);
+    if (rockerT >= 0) {
+      rockerT += dt;
+      var t = Math.min(rockerT / LAMP_SWITCH_FLIP_S, 1);
+      rockerPos = rockerFrom + ((rockerOn ? 1 : 0) - rockerFrom) * t * t * t;
+      if (t >= 1) rockerT = -1;
+      model.setLampSwitch(rockerPos);
+      // The contacts snap over as the rocker passes level.
+      lampOn = rockerPos > 0.5;
       moving = true;
     }
     var goal = lampOn ? 1 : 0;
@@ -634,7 +670,7 @@ function start(crt) {
     if (!hits.length) return null;
     var obj = hits[0].object;
     if (obj === model.collider || obj === model.button) return { button: true };
-    if (obj === model.lampCollider || obj.name === "Lamp_Switch") return { lamp: true };
+    if (obj === model.lampCollider || obj.name.indexOf("Lamp_Switch") === 0) return { lamp: true };
     if (obj.userData.code !== undefined) return { key: obj };
     if (obj === model.keyboard || obj.parent === model.keyboard) return { keyboard: true };
     if (obj !== face) return null;
@@ -914,7 +950,7 @@ function start(crt) {
   });
 
   // --- loading -------------------------------------------------------------
-  var load = loadModel(ASSET_BASE);
+  var load = loadModel(ASSET_BASE, pickMapSize(renderer.capabilities.maxTextureSize));
   cleanup.push(load.dispose);
   var loadTimer = setTimeout(function () {
     fallback("model took too long to load");
@@ -936,8 +972,19 @@ function start(crt) {
       clearTimeout(loadTimer);
       ready = true;
       wake(1);
+      return load.better;
+    })
+    .then(function (maps) {
+      if (maps && !dead) sharpen(load, maps);
     })
     .catch(function (err) {
+      if (dead) return;
+      // The larger maps failing to arrive is no reason to drop a scene that
+      // is already running on the smaller ones.
+      if (ready) {
+        if (window.console) console.warn("[crt] staying on the small light maps: " + (err && err.message ? err.message : err));
+        return;
+      }
       fallback(err && err.message ? err.message : String(err));
     });
 
@@ -998,6 +1045,9 @@ function start(crt) {
     buttonToClient: function () {
       return model ? toClient(new Vector3().setFromMatrixPosition(model.collider.matrixWorld)) : null;
     },
+    lampSwitchToClient: function () {
+      return model ? toClient(new Vector3().setFromMatrixPosition(model.lampCollider.matrixWorld)) : null;
+    },
     hitTest: function (x, y) {
       var hit = hitTest({ clientX: x, clientY: y });
       // Report a key by what it is rather than handing out the mesh.
@@ -1010,6 +1060,11 @@ function start(crt) {
         beamGain: beamGain,
         modelReady: ready,
         screenLevel: screenLevel,
+        lampOn: lampOn,
+        lampLevel: lampLevel,
+        rocker: rockerPos,
+        // Size of the light maps being drawn with.
+        mapSize: model ? model.maps.env.room.image.width : 0,
         camera: rig ? rig.info() : null,
       };
     },
