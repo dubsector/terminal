@@ -842,6 +842,11 @@ function start(crt) {
   }
   listen(window, "keydown", keyEvent, true);
   listen(window, "keyup", keyEvent, true);
+  // What the terminal types by itself (the login, the guided commands)
+  // presses the keys too, as if someone sat at it.
+  crt.onAutoKey = function (ch) {
+    if (keys) keys.strike(ch);
+  };
   // With the window out of focus the keyups never come.
   function releaseKeys() {
     if (keys) keys.releaseAll();

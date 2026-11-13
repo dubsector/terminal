@@ -730,6 +730,7 @@ function afterCommand(result) {
 // intro and clicked links leave it: move below it, run it, prompt again.
 function submitLine(line) {
   busy = true;
+  pressKey("\r");
   term.write("\r\n");
   return runCommand(line).then(afterCommand);
 }
@@ -796,10 +797,18 @@ function humanType(count, onKeystroke, cb, reactionMin, reactionMax) {
   setTimeout(step, randBetween(reactionMin, reactionMax));
 }
 
+// Everything typed on the visitor's behalf also goes down on the 3D
+// keyboard, when there is one (scene.js sets onAutoKey).
+function pressKey(ch) {
+  var crt = window.__crt;
+  if (crt && crt.onAutoKey) crt.onAutoKey(ch);
+}
+
 function typeLine(text, cb, reactionMin, reactionMax) {
   humanType(
     text.length,
     function (i) {
+      pressKey(text.charAt(i));
       term.write(text.charAt(i));
     },
     cb,
@@ -810,8 +819,18 @@ function typeLine(text, cb, reactionMin, reactionMax) {
 
 // Same cadence as typeLine, but nothing is echoed to the screen -
 // mimics a real password prompt while still taking as long as typing one.
+// The keys still go down: some password, never the same one twice.
+var PASSWORD_KEYS = "abcdefghijklmnopqrstuvwxyz0123456789";
 function typeInvisible(length, cb, reactionMin, reactionMax) {
-  humanType(length, function () {}, cb, reactionMin, reactionMax);
+  humanType(
+    length,
+    function () {
+      pressKey(PASSWORD_KEYS.charAt(Math.floor(Math.random() * PASSWORD_KEYS.length)));
+    },
+    cb,
+    reactionMin,
+    reactionMax
+  );
 }
 
 function writeLines(lines) {
@@ -1025,9 +1044,11 @@ function bootSequence(done) {
   typeLine("root", function () {
     // Beat before hitting Enter once the word is fully typed.
     wait(randBetween(200, 450), function () {
+      pressKey("\r");
       term.write("\r\nPassword: ");
       typeInvisible(pwLength, function () {
         wait(randBetween(200, 450), function () {
+          pressKey("\r");
           term.write("\r\n");
           // The system verifying credentials and assembling the MOTD. By
           // now visitorIpPromise has almost always already resolved.
