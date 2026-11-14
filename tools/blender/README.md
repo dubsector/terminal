@@ -1,7 +1,7 @@
 # Scene build scripts
 
-These generate the 3D scene for the `?gl=1` view (terminal, keyboard, desk and
-room) with Blender 5.2 running headless. Nothing here ships to the site; the
+These generate the site's 3D scene (terminal, keyboard, desk and room) with
+Blender 5.2 running headless. Nothing here ships to the site; the
 outputs land in `src/assets/`.
 
     blender -b --factory-startup --python tools/blender/<script>.py -- [args]
