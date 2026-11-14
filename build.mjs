@@ -22,7 +22,7 @@ cpSync("src/style.css", "dist/style.css");
 cpSync("src/favicon.svg", "dist/favicon.svg");
 // Link-share preview images (tools/share/make.mjs), named in index.html's og: tags.
 cpSync("src/share", "dist/share", { recursive: true });
-cpSync("branding/logo-circle-512.png", "dist/icon-512.png");
+cpSync("src/icon-512.png", "dist/icon-512.png");
 cpSync("src/robots.txt", "dist/robots.txt");
 cpSync("src/sitemap.xml", "dist/sitemap.xml");
 
