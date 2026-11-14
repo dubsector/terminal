@@ -4,6 +4,39 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>dubsector.dev</title>
+  <meta name="description" content="A DS-220 video terminal you can type into.">
+  <link rel="canonical" href="https://dubsector.dev/">
+  <meta name="theme-color" content="#101720">
+  <link rel="apple-touch-icon" href="/icon-512.png">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "dubsector.dev",
+    "url": "https://dubsector.dev/",
+    "description": "A DS-220 video terminal you can type into.",
+    "image": "https://dubsector.dev/share/terminal.jpg",
+    "author": { "@type": "Person", "name": "dubsector", "url": "https://github.com/dubsector", "sameAs": /*SAMEAS*/[] }
+  }
+  </script>
+  <!-- Link previews. The GIF spins where an app animates link previews
+       (Discord does); most show only its first frame. X gets the sharper still.
+       Remade with tools/blender/render_share.py and tools/share/make.mjs. -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="dubsector.dev">
+  <meta property="og:title" content="dubsector.dev">
+  <meta property="og:description" content="A DS-220 video terminal you can type into.">
+  <meta property="og:url" content="https://dubsector.dev/">
+  <meta property="og:image" content="https://dubsector.dev/share/terminal.gif">
+  <meta property="og:image:type" content="image/gif">
+  <meta property="og:image:width" content="640">
+  <meta property="og:image:height" content="336">
+  <meta property="og:image:alt" content="A cream DS-220 video terminal and keyboard turning slowly, green text on its screen">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="dubsector.dev">
+  <meta name="twitter:description" content="A DS-220 video terminal you can type into.">
+  <meta name="twitter:image" content="https://dubsector.dev/share/terminal.jpg">
+  <meta name="twitter:image:alt" content="A cream DS-220 video terminal and keyboard, green text on its screen">
   <script>
     // Start the 3D view's downloads now, not when terminal.js and then
     // scene.js get round to asking. The test is GL_MODE's in terminal.js;
@@ -34,6 +67,13 @@
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 </head>
 <body>
+<!-- The terminal is drawn, not written, so search engines and screen
+     readers get the same thing in words. build.mjs fills in the links. -->
+<header class="sr-only">
+  <h1>dubsector.dev</h1>
+  <p>A DS-220 video terminal you can type into: log in, look around with ls and cd, and follow the links.</p>
+  <nav aria-label="Links"><!--LINKS--></nav>
+</header>
 <div class="monitor">
   <div class="crt">
     <div id="terminal"></div>
