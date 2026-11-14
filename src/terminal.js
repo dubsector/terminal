@@ -284,6 +284,14 @@ var shellReady = new Promise(function (resolve) {
                 bootMenu: bootEntries().map(function (entry) {
                   return entry.title;
                 }),
+                // What `reboot <name>` accepts, and the system each starts.
+                rebootTargets: {
+                  dubuntu: "dubuntu",
+                  hannah: "hannah",
+                  hannahmontana: "hannah",
+                  redstar: "redstar",
+                  redstaros: "redstar",
+                },
               })
             )
           : null

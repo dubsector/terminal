@@ -227,7 +227,14 @@ export function createSession(host) {
     });
   }
   var powerCommands = [
-    power("reboot", function () {
+    // `reboot hannah`, `reboot redstar`: straight into one of the systems on
+    // the boot menu, without the menu (host.rebootTargets, from terminal.js).
+    power("reboot", function (args) {
+      var targets = host.rebootTargets || {};
+      for (var i = 0; i < args.length; i++) {
+        var name = String(args[i]).toLowerCase().replace(/[^a-z]/g, "");
+        if (targets[name]) return { how: "reboot", then: targets[name] };
+      }
       return "reboot";
     }),
     power("poweroff", function () {

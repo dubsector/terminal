@@ -52,7 +52,8 @@ site's links laid onto its disk under `/var/www/dubsector.dev` as it starts, and
 `poweroff` (there or on the first machine) brings you back to the first machine's login. The
 emulator and image are only downloaded when someone asks for them. The menu has a few other entries too: the
 first machine again, and a couple of novelty systems ([src/distros.js](src/distros.js)) that are
-that same machine under another name, banner and phosphor colour.
+that same machine under another name, banner and phosphor colour. `reboot hannah` and
+`reboot redstar` go straight to them.
 
 **The flat site.** Underneath the scene, xterm.js runs the real terminal: it takes the
 keystrokes and owns the shell, and the scene redraws its buffer on the tube. When WebGL can't
