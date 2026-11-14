@@ -201,8 +201,9 @@ export function loadModel(base, mapSize) {
   };
 }
 
-// MeshBasicMaterial's light map (the room: window and dusk sky), plus two
-// more maps on the same texels: the light of the desk lamp, scaled by how
+// MeshBasicMaterial's light map (the room's own light), scaled by how far up
+// that light is (the ceiling light's start-up, in scene.js), plus two more
+// maps on the same texels: the light of the desk lamp, scaled by how
 // far on the lamp is, and the light the lit picture throws, scaled by its
 // colour and level. Both scales are uniforms shared by every material.
 // three multiplies the light map by lightMapIntensity / PI, and the room map
@@ -231,21 +232,22 @@ function bakedMaterial(maps, ranges, light, legend) {
     shader.uniforms.lampLightMap = lampMap;
     shader.uniforms.lampLevel = light.lamp;
     shader.uniforms.lampScale = lampScale;
+    shader.uniforms.roomLevel = light.room;
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <lightmap_pars_fragment>",
-        "#include <lightmap_pars_fragment>\nuniform sampler2D screenLightMap;\nuniform vec3 screenLight;\nuniform float screenScale;\nuniform sampler2D lampLightMap;\nuniform float lampLevel;\nuniform float lampScale;"
+        "#include <lightmap_pars_fragment>\nuniform sampler2D screenLightMap;\nuniform vec3 screenLight;\nuniform float screenScale;\nuniform sampler2D lampLightMap;\nuniform float lampLevel;\nuniform float lampScale;\nuniform float roomLevel;"
       )
       .replace(
         "vec4 lightMapTexel = texture2D( lightMap, vLightMapUv );",
-        "vec4 lightMapTexel = texture2D( lightMap, vLightMapUv );\n\t\tlightMapTexel.rgb += texture2D( lampLightMap, vLightMapUv ).rgb * lampLevel * lampScale;\n\t\tlightMapTexel.rgb += texture2D( screenLightMap, vLightMapUv ).rgb * screenLight * screenScale;"
+        "vec4 lightMapTexel = texture2D( lightMap, vLightMapUv );\n\t\tlightMapTexel.rgb *= roomLevel;\n\t\tlightMapTexel.rgb += texture2D( lampLightMap, vLightMapUv ).rgb * lampLevel * lampScale;\n\t\tlightMapTexel.rgb += texture2D( screenLightMap, vLightMapUv ).rgb * screenLight * screenScale;"
       );
     // three's shader text is not an API. If an upgrade moves the anchor the
     // set would silently lose its glow, so fail loudly instead.
     if (shader.fragmentShader.indexOf("lampLightMap, vLightMapUv") < 0) throw new Error("light map patch did not apply");
   };
   mat.customProgramCacheKey = function () {
-    return "screenLight2";
+    return "screenLight3";
   };
   return mat;
 }
@@ -309,10 +311,20 @@ export function buildModel(loaded, legends) {
   var screenLight = { value: new Color(0, 0, 0) };
   // 0 = lamp off, 1 = on.
   var lampLevel = { value: 1 };
-  var light = { screen: screenLight, lamp: lampLevel };
+  // 0 = the room's own light out, 1 = up in full.
+  var roomLevel = { value: 1 };
+  var light = { screen: screenLight, lamp: lampLevel, room: roomLevel };
   // Unlit surfaces lit by the lamp (the inside of the shade, the bulb): their
-  // colour with the lamp on and off.
+  // colour with the lamp on and off. The "off" colour is the room's light
+  // alone, so it dims with the room; the lamp's share comes on top.
   var glows = [];
+  var glowLamp = new Color();
+  function applyGlows() {
+    glows.forEach(function (g) {
+      glowLamp.copy(g.on).sub(g.off).multiplyScalar(lampLevel.value);
+      g.material.color.copy(g.off).multiplyScalar(roomLevel.value).add(glowLamp);
+    });
+  }
   var materials = [];
   function keep(mat) {
     materials.push(mat);
@@ -451,9 +463,12 @@ export function buildModel(loaded, legends) {
     // 0..1: how much of the lamp's light is in the room.
     setLamp: function (level) {
       lampLevel.value = level;
-      glows.forEach(function (g) {
-        g.material.color.copy(g.off).lerp(g.on, level);
-      });
+      applyGlows();
+    },
+    // 0..1: how much of the room's own light is up.
+    setRoom: function (level) {
+      roomLevel.value = level;
+      applyGlows();
     },
     // 0 = tipped to off, 1 = tipped to on, anything between is on its way over.
     setLampSwitch: function (on) {
