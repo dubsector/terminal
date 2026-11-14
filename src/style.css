@@ -49,7 +49,10 @@ body.keyboard-open {
      light into the dark area around them; drop-shadow's alpha-silhouette
      blur reproduces that halo cheaply since xterm's canvas is otherwise
      opaque to CSS glow tricks. */
-  --phosphor-glow: drop-shadow(0 0 1px rgba(48,240,48,.55)) drop-shadow(0 0 3px rgba(48,240,48,.35)) drop-shadow(0 0 7px rgba(48,240,48,.16));
+  /* The boot menu's other systems (src/distros.js) change these. */
+  --phosphor: #30f030;
+  --phosphor-rgb: 48,240,48;
+  --phosphor-glow: drop-shadow(0 0 1px rgba(var(--phosphor-rgb),.55)) drop-shadow(0 0 3px rgba(var(--phosphor-rgb),.35)) drop-shadow(0 0 7px rgba(var(--phosphor-rgb),.16));
 }
 
 .crt{
@@ -64,7 +67,7 @@ body.keyboard-open {
   background:#001000;
   font-family:'Courier New';
   padding:clamp(8px, 2vw, 20px);
-  color:#30f030;
+  color:var(--phosphor);
   overflow:hidden;
 }
 

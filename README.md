@@ -44,12 +44,15 @@ can click. The site's links live in [src/shell/links.json](src/shell/links.json)
 file at the path its URL spells, so adding a URL there is all it takes to list it. `exit` drops
 you at a real login prompt with no way back in short of reloading.
 
-**The Linux machine.** `reboot` doesn't restart that machine. It boots a real one: Alpine Linux
+**The Linux machine.** `reboot` doesn't restart that machine. It brings up a GRUB menu, and after
+five seconds boots a real one: Alpine Linux
 on a 32-bit PC emulated in the page by [v86](https://github.com/copy/v86), with the terminal on
 its serial console ([src/linux.js](src/linux.js)). It has bash, nano, less, htop and tree, the
 site's links laid onto its disk under `/var/www/dubsector.dev` as it starts, and no network.
 `poweroff` (there or on the first machine) brings you back to the first machine's login. The
-emulator and image are only downloaded when someone asks for them.
+emulator and image are only downloaded when someone asks for them. The menu has a few other entries too: the
+first machine again, and a couple of novelty systems ([src/distros.js](src/distros.js)) that are
+that same machine under another name, banner and phosphor colour.
 
 **The flat site.** Underneath the scene, xterm.js runs the real terminal: it takes the
 keystrokes and owns the shell, and the scene redraws its buffer on the tube. When WebGL can't
@@ -72,6 +75,7 @@ most apps show its first frame), with a sharper still for X (`twitter:image`).
 | `src/shell.js`, `src/shell/` | The shell (just-bash), the machine's disk and its commands. Its own script, loaded alongside the page. |
 | `src/scene.js`, `src/gl/` | The WebGL scene: tube, model loading, keys, legends, camera, desk props. |
 | `src/linux.js` | The v86 machine behind `reboot`, loaded only when it is needed. |
+| `src/distros.js` | The other systems on the boot menu: banners, MOTDs, colours and habits. |
 | `src/worker.js` | Cloudflare Worker: `/api/whoami`, the Matomo proxy, then the static assets. |
 | `src/analytics.js` | Matomo tracking. |
 | `src/assets/` | The baked model and light maps (written by `tools/blender/build_scene.py`). |

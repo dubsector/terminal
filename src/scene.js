@@ -142,6 +142,7 @@ var FACE_FRAG = [
   "uniform float uRoomScale;",
   "uniform float uRoomLevel;",
   "uniform float uLampLevel;",
+  "uniform vec3 uPhosphor;",
   "varying vec2 vP;",
   "varying vec3 vWN;",
   "varying vec3 vWP;",
@@ -241,7 +242,7 @@ var FACE_FRAG = [
   "  float T = " + GLASS_T.toFixed(2) + ";",
   "  float dust = noise(vP * 90.0) * noise(vP * 11.0 + 3.0);",
   "  vec3 col = T*T * vec3(0.68, 0.72, 0.66) * amb;",
-  "  col += T * vec3(" + PHOSPHOR_RGB.map(function (c) { return c.toFixed(2); }).join(", ") + ") * em * " + EMISSION_GAIN.toFixed(2) + ";",
+  "  col += T * uPhosphor * em * " + EMISSION_GAIN.toFixed(2) + ";",
   // Outer glass surface: Fresnel reflection of the room. Unaffected by
   // anything the tube is doing, so it stays when the set is off.
   "  float F = 0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0);",
@@ -389,6 +390,7 @@ function start(crt) {
       uRoomScale: { value: 0.5 },
       uRoomLevel: { value: 1 },
       uLampLevel: { value: 1 },
+      uPhosphor: { value: new Color().setRGB(PHOSPHOR_RGB[0], PHOSPHOR_RGB[1], PHOSPHOR_RGB[2]) },
     },
   });
   // Larger than the bezel opening so its edges are hidden behind the lip.
@@ -959,6 +961,12 @@ function start(crt) {
   listen(window, "keyup", keyEvent, true);
   // What the terminal types by itself (the login, the guided commands)
   // presses the keys too, as if someone sat at it.
+  // The boot menu's other systems (src/distros.js) glow another colour.
+  crt.setPhosphor = function (rgb) {
+    faceMat.uniforms.uPhosphor.value.setRGB(rgb[0], rgb[1], rgb[2]);
+    wake(1);
+  };
+  if (crt.phosphor) crt.setPhosphor(crt.phosphor);
   crt.onAutoKey = function (ch) {
     if (keys) keys.strike(ch);
   };
@@ -1029,7 +1037,7 @@ function start(crt) {
     if (Math.abs(level - screenLevel) < 0.0002) screenLevel = level;
     else moving = true;
     model.screenLight.value
-      .setRGB(PHOSPHOR_RGB[0], PHOSPHOR_RGB[1], PHOSPHOR_RGB[2])
+      .copy(faceMat.uniforms.uPhosphor.value)
       .multiplyScalar(GLASS_T * EMISSION_GAIN * screenLevel * SCREEN_GLOW_GAIN);
 
     if (buttonPos !== buttonGoal) {

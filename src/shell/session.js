@@ -437,8 +437,33 @@ export function createSession(host) {
     return ready;
   }
 
+  // The boot menu has started this machine as another system: host says
+  // which (terminal.js has changed it), and extra is the files that system
+  // has of its own. The last one's are taken away first.
+  var extraFiles = [];
+  function rebrand(extra) {
+    ready = ready.then(async function () {
+      var fs = bash.fs;
+      for (var i = 0; i < extraFiles.length; i++) {
+        try {
+          await fs.rm(extraFiles[i], { force: true });
+        } catch (error) {}
+      }
+      extra = extra || {};
+      extraFiles = Object.keys(extra);
+      var files = Object.assign(machine.osFiles(), extra);
+      Object.keys(files).forEach(function (path) {
+        var dir = path.slice(0, path.lastIndexOf("/"));
+        if (dir) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path, files[path]);
+      });
+    });
+    return ready;
+  }
+
   return {
     home: HOME,
+    rebrand: rebrand,
     run: run,
     complete: complete,
     incomplete: incomplete,

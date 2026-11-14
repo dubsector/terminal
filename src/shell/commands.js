@@ -108,7 +108,7 @@ export function createCommands(host, machine, shellPid) {
     if (!letters) letters = "s";
     if (letters.indexOf("a") !== -1) letters = order;
     var values = {
-      s: "Linux", n: host.hostname, r: host.kernel, v: machine.kernelBuild,
+      s: "Linux", n: host.hostname, r: host.kernel, v: machine.kernelBuild(),
       m: "x86_64", p: "x86_64", i: "x86_64", o: "GNU/Linux",
     };
     return ok(
@@ -313,7 +313,7 @@ export function createCommands(host, machine, shellPid) {
     var opts = split(args);
     var fields = [
       ["i", "Distributor ID", host.os.name], ["d", "Description", host.os.name + " " + host.os.version],
-      ["r", "Release", machine.release], ["c", "Codename", "resolute"],
+      ["r", "Release", machine.release()], ["c", "Codename", host.os.codename || "resolute"],
     ];
     var all = /a/.test(opts.letters);
     var short = /s/.test(opts.letters);

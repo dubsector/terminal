@@ -3,15 +3,28 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { initAnalytics, trackCommand, trackClick, trackLink } from "./analytics.js";
 import { createLineEditor, splitKeys } from "./readline.js";
+import { DISTROS } from "./distros.js";
 
 initAnalytics();
 
-var HOSTNAME = "websvr";
 var USER = "root";
 var HOME = "/root";
-var OS_NAME = "Dubuntu";
-var OS_VERSION = "26.04.1 LTS";
-var KERNEL_VERSION = "6.14.0-15-generic";
+
+// The system this machine is running as. It is Dubuntu, unless the boot
+// menu that `reboot` shows has started it as one of the others in
+// src/distros.js.
+var distro = DISTROS.dubuntu;
+
+// What the shell is told about the machine, and what the banners print.
+// The shell keeps this object, so changing it here changes what `uname`,
+// `hostname` and `lsb_release` say too.
+var HOST = {
+  user: USER,
+  hostname: distro.hostname,
+  os: distro.os,
+  kernel: distro.kernel,
+  kernelBuild: distro.kernelBuild,
+};
 
 // The figures the login banner reports. The shell is given the same ones,
 // so `free`, `df`, `uptime` and `ps` agree with what the visitor was told
@@ -48,6 +61,8 @@ var term = new Terminal({
       if (/^https?:\/\//.test(uri)) {
         trackLink(uri);
         window.open(uri, "_blank", "noopener,noreferrer");
+      } else if (uri.indexOf("boot:") === 0) {
+        chooseBootEntry(+uri.slice(5));
       } else if (uri.indexOf("cd:") === 0 && canNavigate()) {
         var target = decodeURI(uri.slice(3));
         trackClick(baseName(target));
@@ -261,15 +276,16 @@ var shellReady = new Promise(function (resolve) {
     script.onload = function () {
       resolve(
         window.__createShell
-          ? window.__createShell({
-              user: USER,
-              hostname: HOSTNAME,
-              os: { name: OS_NAME, version: OS_VERSION },
-              kernel: KERNEL_VERSION,
-              stats: MACHINE,
-              cmatrix: startMatrix,
-              linux: !!__LINUX__,
-            })
+          ? window.__createShell(
+              Object.assign(HOST, {
+                stats: MACHINE,
+                cmatrix: startMatrix,
+                linux: !!__LINUX__,
+                bootMenu: bootEntries().map(function (entry) {
+                  return entry.title;
+                }),
+              })
+            )
           : null
       );
     };
@@ -373,7 +389,7 @@ function promptPath() {
 }
 
 function promptString() {
-  return USER + "@" + HOSTNAME + ":" + promptPath() + "# ";
+  return USER + "@" + HOST.hostname + ":" + promptPath() + "# ";
 }
 
 // True while a clicked link's "cd" + "ls -a" replay is mid-animation.
@@ -389,7 +405,7 @@ var navigating = false;
 // half typed over several lines, and not from the login screen, where
 // links left in the scrollback mean nothing.
 function canNavigate() {
-  return !navigating && !running && !busy && !continued.length && !loginMode && !banned && !linux;
+  return !navigating && !bootMenu && !running && !busy && !continued.length && !loginMode && !banned && !linux;
 }
 
 function clearInputLine() {
@@ -700,6 +716,12 @@ function runCommand(line, remembered) {
     .then(function (result) {
       running = null;
       if (result.cwd) cwd = result.cwd;
+      // The habits of whichever system this is (src/distros.js).
+      var habit = distro.after && !result.power && !result.logout && distro.after(line, result.output);
+      if (habit) {
+        result = Object.assign({}, result, { output: habit.output });
+        if (habit.restart) result.power = { how: "reboot", then: distro.key };
+      }
       return new Promise(function (resolve) {
         term.write(result.output, function () {
           resolve(result);
@@ -713,7 +735,8 @@ function runCommand(line, remembered) {
 function afterCommand(result) {
   if (result.power) {
     typeahead = [];
-    powerDown(result.power);
+    if (typeof result.power === "string") powerDown(result.power);
+    else powerDown(result.power.how, result.power.then);
     return result;
   }
   if (result.logout) {
@@ -872,6 +895,12 @@ function buildMotd(visitorIp) {
   // that only fits on an 80-column terminal. Below that, stack them
   // one per line so nothing wraps mid-word.
   var wide = term.cols >= 76;
+
+  // The other systems on the boot menu have their own.
+  if (distro.motd) {
+    return distro.motd({ wide: wide, now: now, lastLogin: lastLogin, ip: visitorIp, stats: MACHINE, date: formatDate });
+  }
+
   var sysinfo = wide
     ? [
         "  System load:  " + load + "               Processes:             " + procs,
@@ -890,7 +919,7 @@ function buildMotd(visitorIp) {
       ];
 
   return [
-    "Welcome to " + OS_NAME + " " + OS_VERSION + " (GNU/Linux " + KERNEL_VERSION + " x86_64)",
+    "Welcome to " + HOST.os.name + " " + HOST.os.version + " (GNU/Linux " + HOST.kernel + " x86_64)",
     "",
     " * Documentation:  https://help.ubuntu.com",
     " * Management:     https://landscape.canonical.com",
@@ -947,8 +976,8 @@ var loginAttempts = 0;
 var banned = false;
 
 function writeLoginBanner() {
-  term.write(OS_NAME + " " + OS_VERSION + " " + HOSTNAME + " tty1\r\n\r\n");
-  term.write(HOSTNAME + " login: ");
+  term.write(HOST.os.name + " " + HOST.os.version + " " + HOST.hostname + " tty1\r\n\r\n");
+  term.write(HOST.hostname + " login: ");
 }
 
 // `exit`/`logout` prints "logout" and hands control back to getty, which
@@ -1006,7 +1035,7 @@ function handleLoginKeystroke(data) {
         });
         return;
       }
-      term.write("\r\nLogin incorrect\r\n" + HOSTNAME + " login: ");
+      term.write("\r\nLogin incorrect\r\n" + HOST.hostname + " login: ");
       loginMode = "username";
       loginBuffer = "";
       term.options.disableStdin = false;
@@ -1075,6 +1104,11 @@ term.onData(function (data) {
   // With the Linux machine running, the keyboard is its keyboard.
   if (linux) {
     linux.send(data);
+    return;
+  }
+
+  if (bootMenu) {
+    handleBootMenuKey(data);
     return;
   }
 
@@ -1179,11 +1213,11 @@ var STOPPING = [
 ];
 
 // Takes this machine down the way `reboot` ("reboot") or `poweroff` asked,
-// then starts whatever comes next.
-function powerDown(how) {
+// then starts whatever comes next: after a reboot the boot menu, unless
+// `then` names the system to start (src/distros.js) without asking.
+function powerDown(how, then) {
   busy = true;
   term.options.disableStdin = true;
-  var toLinux = how === "reboot" && LINUX;
   var lines = STOPPING.concat(
     how === "reboot"
       ? ["Finished systemd-reboot.service - System Reboot.", "Reached target reboot.target - System Reboot."]
@@ -1198,9 +1232,180 @@ function powerDown(how) {
     // The kernel has the last word, stamped with how long it has been up.
     var up = ((Date.now() - MACHINE.bootedAt) / 1000).toFixed(6);
     term.write("[" + up.padStart(12) + "] reboot: " + (how === "reboot" ? "Restarting system" : "Power down") + "\r\n");
-    wait(how === "reboot" ? 900 : 2500, toLinux ? startLinux : bootAgain);
+    wait(how === "reboot" ? 900 : 2500, function () {
+      if (how !== "reboot") bootAgain();
+      else if (then) bootDistro(then);
+      else showBootMenu();
+    });
   }
   wait(randBetween(200, 400), next);
+}
+
+// --- boot menu -------------------------------------------------------------
+// What a PC with more than one system on it shows as it starts: GRUB's menu.
+// The real Alpine machine is first and starts by itself after a few
+// seconds, as it always has; the rest are this machine under other names.
+
+var BOOT_TIMEOUT_S = 5;
+
+function bootEntries() {
+  var list = [];
+  if (LINUX) list.push({ title: "Alpine Linux", boot: startLinux });
+  Object.keys(DISTROS).forEach(function (key) {
+    list.push({
+      title: DISTROS[key].menu,
+      boot: function () {
+        bootDistro(key);
+      },
+    });
+  });
+  return list;
+}
+
+// While the menu is up: { entries, index, seconds, timer }.
+var bootMenu = null;
+
+function showBootMenu() {
+  applyDistro(DISTROS.dubuntu);
+  term.reset();
+  // Hidden while the menu is up, the way GRUB's is.
+  term.write("\x1b[?25l");
+  bootMenu = { entries: bootEntries(), index: 0, seconds: BOOT_TIMEOUT_S, timer: null };
+  bootMenu.timer = setInterval(function () {
+    bootMenu.seconds--;
+    if (bootMenu.seconds <= 0) chooseBootEntry(bootMenu.index);
+    else drawBootMenu();
+  }, 1000);
+  drawBootMenu();
+  // The real machine is the likeliest choice: start fetching it now.
+  if (LINUX) loadLinux();
+  typeahead = [];
+  term.options.disableStdin = false;
+  term.focus();
+}
+
+function drawBootMenu() {
+  var cols = term.cols;
+  var inner = Math.max(20, cols - 4);
+  var rows = Math.max(4, Math.min(12, term.rows - 13));
+  function centre(text) {
+    return " ".repeat(Math.max(0, Math.floor((cols - text.length) / 2))) + text;
+  }
+  var out = "\x1b[H\x1b[2J\r\n" + centre("GNU GRUB  version 2.12") + "\r\n\r\n";
+  out += " ┌" + "─".repeat(inner) + "┐\r\n";
+  for (var i = 0; i < rows; i++) {
+    var entry = bootMenu.entries[i];
+    var title = entry ? entry.title.slice(0, inner - 1) : "";
+    var gap = " ".repeat(inner - 1 - title.length);
+    var line = (i === bootMenu.index ? "*" : " ") + title + gap;
+    // Each entry's title is a link, so on a phone (no arrow keys) a tap
+    // boots it.
+    if (entry) {
+      line = (i === bootMenu.index ? "*" : " ") + "\x1b]8;;boot:" + i + "\x1b\\" + title + "\x1b]8;;\x1b\\" + gap;
+      if (i === bootMenu.index) line = "\x1b[7m" + line + "\x1b[27m";
+    }
+    out += " │" + line + "│\r\n";
+  }
+  out += " └" + "─".repeat(inner) + "┘\r\n\r\n";
+  var help = cols >= 70
+    ? [
+        "     Use the ↑ and ↓ keys to select which entry is highlighted.",
+        "     Press enter to boot the selected OS, `e' to edit the commands",
+        "     before booting or `c' for a command-line.",
+      ]
+    : ["  ↑ and ↓ select an entry, enter boots it.", "  Or tap the one you want."];
+  out += help.join("\r\n") + "\r\n";
+  if (bootMenu.timer) {
+    out += "  The highlighted entry will be executed automatically in " + bootMenu.seconds + "s.";
+  }
+  term.write(out);
+}
+
+// Any key stops the countdown, as in GRUB; the arrows move, enter boots.
+function handleBootMenuKey(data) {
+  if (bootMenu.timer) {
+    clearInterval(bootMenu.timer);
+    bootMenu.timer = null;
+  }
+  var count = bootMenu.entries.length;
+  if (data === "\x1b[A" || data === "\x1bOA") bootMenu.index = (bootMenu.index + count - 1) % count;
+  else if (data === "\x1b[B" || data === "\x1bOB") bootMenu.index = (bootMenu.index + 1) % count;
+  else if (data === "\r" || data === "\n") {
+    chooseBootEntry(bootMenu.index);
+    return;
+  }
+  drawBootMenu();
+}
+
+function chooseBootEntry(index) {
+  var entry = bootMenu && bootMenu.entries[index];
+  if (!entry) return;
+  clearInterval(bootMenu.timer);
+  bootMenu = null;
+  term.options.disableStdin = true;
+  term.write("\x1b[?25h");
+  term.reset();
+  entry.boot();
+}
+
+// Makes this machine the given system: its names, and its colour of
+// phosphor (a novelty no real tube could manage).
+function applyDistro(d) {
+  distro = d;
+  HOST.hostname = d.hostname;
+  HOST.os = d.os;
+  HOST.kernel = d.kernel;
+  HOST.kernelBuild = d.kernelBuild;
+  var p = d.phosphor;
+  term.options.theme = { background: "#00100000", foreground: p.css, cursor: p.css };
+  document.documentElement.style.setProperty("--phosphor", p.css);
+  document.documentElement.style.setProperty("--phosphor-rgb", p.glow);
+  var crt = window.__crt;
+  if (crt) {
+    crt.phosphor = p.rgb;
+    if (crt.setPhosphor) crt.setPhosphor(p.rgb);
+  }
+}
+
+// Starts this machine as one of the systems in src/distros.js: its boot
+// messages, then its login, on the same disk as before.
+function bootDistro(key) {
+  var d = DISTROS[key];
+  term.reset();
+  applyDistro(d);
+  cwd = HOME;
+  continued = [];
+  typeahead = [];
+  shellReady.then(function (shell) {
+    if (!shell) return;
+    shell.rebrand(d.files);
+    shell.relogin();
+  });
+  var lines = (d.bootLines || []).slice();
+  function next() {
+    if (lines.length) {
+      var line = lines.shift().replace(/^\[  OK  \]/, "[  \x1b[1mOK\x1b[0m  ]");
+      term.write(line + "\r\n");
+      wait(randBetween(60, 220), next);
+      return;
+    }
+    wait(d.bootLines ? 700 : 0, function () {
+      term.reset();
+      term.options.disableStdin = false;
+      bootSequence(key === "dubuntu" ? runIntro : atPrompt);
+    });
+  }
+  next();
+}
+
+// After a login to one of the other systems: straight to the prompt. The
+// tour of the site is Dubuntu's.
+function atPrompt() {
+  typeahead = [];
+  term.write("\r\n");
+  showPrompt().then(function () {
+    term.focus();
+  });
 }
 
 var linuxLoaded = null;
@@ -1244,7 +1449,7 @@ function startLinux() {
       // real one it comes back with its disk as it first was.
       onRestart: function () {
         stopLinux();
-        wait(900, startLinux);
+        wait(900, showBootMenu);
       },
       onError: linuxFailed,
     });
@@ -1269,15 +1474,7 @@ function linuxFailed() {
 
 // This machine starting up again: a fresh login on the same disk.
 function bootAgain() {
-  term.reset();
-  cwd = HOME;
-  continued = [];
-  typeahead = [];
-  shellReady.then(function (shell) {
-    if (shell) shell.relogin();
-  });
-  term.options.disableStdin = false;
-  bootSequence(runIntro);
+  bootDistro("dubuntu");
 }
 
 // Fetches what the Linux machine needs first into the browser's cache, so
