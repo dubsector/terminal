@@ -90,6 +90,24 @@ var LAMP_SWITCH_FLIP_S = 0.12;
 // for a little longer as it cools.
 var LAMP_WARM_S = 0.035;
 var LAMP_COOL_S = 0.09;
+// The ceiling light: how much of the room's baked light is left with it off
+// (the last of the dusk through the window), how long the room sits dark
+// before it is switched on, and its start-up. Each step is one strike of
+// the tube, in seconds after the switch: [from, to, brightness at the start,
+// at the end, depth of the flutter]. Between steps it is out; after the
+// last it has caught and warms up the rest of the way with CEILING_WARM_S.
+// Big changes stay at three a second or fewer, and the flutter shallow,
+// so it never strobes.
+var CEILING_DARK = 0.07;
+var CEILING_HOLD_S = 1.6;
+var CEILING_STEPS = [
+  [0.0, 0.06, 0.6, 0.5, 0.1],
+  [0.5, 0.66, 0.75, 0.62, 0.12],
+  [1.25, 1.8, 0.7, 0.78, 0.1],
+  [1.8, 1.9, 0.5, 0.48, 0.06],
+  [1.9, 2.4, 0.74, 0.86, 0.08],
+];
+var CEILING_WARM_S = 0.9;
 // In a tall window (where the seated view has the keys, but small), the
 // pointer in this much of the bottom of the window looks down at them. A
 // wider window shows the whole keyboard and never changes view.
@@ -119,7 +137,11 @@ var FACE_FRAG = [
   "uniform vec3 uAmbientDir;",
   "uniform sampler2D uRoom;",
   "uniform float uRoomRange;",
+  "uniform sampler2D uRoomOff;",
+  "uniform float uRoomOffRange;",
   "uniform float uRoomScale;",
+  "uniform float uRoomLevel;",
+  "uniform float uLampLevel;",
   "varying vec2 vP;",
   "varying vec3 vWN;",
   "varying vec3 vWP;",
@@ -148,10 +170,16 @@ var FACE_FRAG = [
   // of the face, looking straight out (a pinhole view, already blurred -
   // the faceplate is etched for glare reduction, so nothing in it has a
   // hard edge). A view out of the screen has the tube's +x on its left, so
-  // the picture is addressed mirrored; its first row is the top.
+  // the picture is addressed mirrored; its first row is the top. There are
+  // two pictures, desk lamp on and off: the "off" one is the room's own
+  // light, and what the "on" one has over it is the lamp's, so each can be
+  // dimmed on its own.
   "vec3 room(vec3 r){",
   "  vec2 d = r.xy / max(r.z, 0.15);",
-  "  return texture2D(uRoom, vec2(0.5) - d * uRoomScale).rgb * uRoomRange;",
+  "  vec2 uv = vec2(0.5) - d * uRoomScale;",
+  "  vec3 own = texture2D(uRoomOff, uv).rgb * uRoomOffRange;",
+  "  vec3 lamp = max(texture2D(uRoom, uv).rgb * uRoomRange - own, 0.0);",
+  "  return own * uRoomLevel + lamp * uLampLevel;",
   "}",
   "void main(){",
   "  vec3 N = normalize(vWN);",
@@ -356,7 +384,11 @@ function start(crt) {
       uAmbientDir: { value: new Vector3(0, 0, 1) },
       uRoom: { value: null },
       uRoomRange: { value: 1 },
+      uRoomOff: { value: null },
+      uRoomOffRange: { value: 1 },
       uRoomScale: { value: 0.5 },
+      uRoomLevel: { value: 1 },
+      uLampLevel: { value: 1 },
     },
   });
   // Larger than the bezel opening so its edges are hidden behind the lip.
@@ -426,8 +458,10 @@ function start(crt) {
     var u = faceMat.uniforms;
     u.uRoom.value = model.reflect.texture;
     u.uRoomRange.value = model.reflect.range;
+    u.uRoomOff.value = model.reflectOff.texture;
+    u.uRoomOffRange.value = model.reflectOff.range;
     u.uRoomScale.value = model.reflect.scale;
-    applyLamp();
+    applyLight();
 
     var terminal = TERMINAL_PARTS.map(function (name) {
       return root.getObjectByName(name);
@@ -458,7 +492,7 @@ function start(crt) {
 
     // Decode and upload the big textures now rather than in the first
     // visible frame.
-    [legends.keys, legends.strip, model.reflect.texture].concat(props.textures(), mapTextures(loaded.maps)).forEach(function (t) {
+    [legends.keys, legends.strip, model.reflect.texture, model.reflectOff.texture].concat(props.textures(), mapTextures(loaded.maps)).forEach(function (t) {
       renderer.initTexture(t);
     });
   }
@@ -540,16 +574,97 @@ function start(crt) {
   var rockerFrom = 1;
   var rockerT = -1;
 
-  function applyLamp() {
+  // The light on the glass, the picture in it and the baked layers, for the
+  // lamp and the room's own light as they are now. The bake measured the
+  // glass with the lamp on and off; the difference is the lamp's share.
+  var ownLight = new Color();
+  var lampLight = new Color();
+  var ownDir = new Vector3();
+  var lampDir = new Vector3();
+  function applyLight() {
     var u = faceMat.uniforms;
-    var r = lampLevel >= 0.5 ? model.reflect : model.reflectOff;
-    u.uRoom.value = r.texture;
-    u.uRoomRange.value = r.range;
-    u.uRoomScale.value = r.scale;
-    u.uAmbient.value.copy(model.reflectOff.light.color).lerp(model.reflect.light.color, lampLevel);
-    u.uAmbientDir.value.copy(model.reflectOff.light.direction).lerp(model.reflect.light.direction, lampLevel).normalize();
+    var on = model.reflect.light;
+    var off = model.reflectOff.light;
+    ownLight.copy(off.color).multiplyScalar(roomLevel);
+    lampLight.copy(on.color).sub(off.color);
+    lampLight.setRGB(Math.max(lampLight.r, 0), Math.max(lampLight.g, 0), Math.max(lampLight.b, 0)).multiplyScalar(lampLevel);
+    u.uAmbient.value.copy(ownLight).add(lampLight);
+    // Each share arrives from its own direction, weighted by how bright it is.
+    var onY = luminance(on.color);
+    var offY = luminance(off.color);
+    ownDir.copy(off.direction).multiplyScalar(offY * roomLevel);
+    lampDir.copy(on.direction).multiplyScalar(onY).addScaledVector(off.direction, -offY).multiplyScalar(lampLevel);
+    u.uAmbientDir.value.copy(ownDir).add(lampDir);
+    if (u.uAmbientDir.value.lengthSq() < 1e-12) u.uAmbientDir.value.copy(on.direction);
+    u.uAmbientDir.value.normalize();
+    u.uRoomLevel.value = roomLevel;
+    u.uLampLevel.value = lampLevel;
     model.setLamp(lampLevel);
+    model.setRoom(roomLevel);
     if (props) props.setLamp(lampLevel);
+  }
+  function luminance(c) {
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  }
+
+  // --- ceiling light -------------------------------------------------------
+  // The visit starts with the room dark: only the desk lamp and the screen.
+  // Then the fluorescent tube overhead is switched on and does what they do
+  // on a cold starter: the filaments warm, it strikes and drops out, strikes
+  // again with the arc fluttering, catches, and creeps up to full brightness
+  // as the tube warms. Its light is the room's baked layer.
+  var roomLevel = CEILING_DARK;
+  // Seconds since the scene first showed; negative before then.
+  var ceilingT = -1;
+  var ceilingDone = false;
+  var reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  // How much of the room's light there is, ceilingT seconds in.
+  function ceilingLevel(t) {
+    if (reduceMotion) {
+      // No flashing: the same dark start, then a plain fade up.
+      var f = Math.min(Math.max((t - CEILING_HOLD_S) / 1.2, 0), 1);
+      return CEILING_DARK + (1 - CEILING_DARK) * f * f * (3 - 2 * f);
+    }
+    t -= CEILING_HOLD_S;
+    if (t < 0) return CEILING_DARK;
+    for (var i = 0; i < CEILING_STEPS.length; i++) {
+      var s = CEILING_STEPS[i];
+      if (t < s[0]) break;
+      if (t < s[1]) {
+        // Within a strike: the arc's brightness, with the flutter of a tube
+        // that has not settled yet riding on it.
+        var k = (t - s[0]) / (s[1] - s[0]);
+        var level = s[2] + (s[3] - s[2]) * k;
+        return CEILING_DARK + (1 - CEILING_DARK) * level * (1 - s[4] * flutter(t));
+      }
+    }
+    var last = CEILING_STEPS[CEILING_STEPS.length - 1];
+    if (t < last[1]) return CEILING_DARK;
+    // Caught. A cold tube gives a little short of its full light, and comes
+    // up the rest of the way over a few seconds.
+    var w = t - last[1];
+    var warm = last[3] + (1 - last[3]) * (1 - Math.exp(-w / CEILING_WARM_S));
+    if (w > CEILING_WARM_S * 6) return 1;
+    return CEILING_DARK + (1 - CEILING_DARK) * warm;
+  }
+  // Irregular 0..1 wobble: a few incommensurate beats, not a regular buzz.
+  function flutter(t) {
+    var v = Math.sin(t * 61.0) * 0.5 + Math.sin(t * 23.7 + 1.3) * 0.3 + Math.sin(t * 97.1 + 0.4) * 0.2;
+    return 0.5 + 0.5 * v;
+  }
+
+  // Returns true while the light is still changing.
+  function stepCeiling(dt) {
+    if (ceilingDone) return false;
+    ceilingT = ceilingT < 0 ? 0 : ceilingT + dt;
+    var level = ceilingLevel(ceilingT);
+    if (level !== roomLevel) {
+      roomLevel = level;
+      applyLight();
+    }
+    if (ceilingT > CEILING_HOLD_S && level >= 1) ceilingDone = true;
+    return !ceilingDone;
   }
 
   function toggleLamp() {
@@ -578,7 +693,7 @@ function start(crt) {
       var tau = lampOn ? LAMP_WARM_S : LAMP_COOL_S;
       lampLevel += (goal - lampLevel) * (1 - Math.exp(-dt / tau));
       if (Math.abs(goal - lampLevel) < 0.002) lampLevel = goal;
-      applyLamp();
+      applyLight();
       moving = true;
     }
     return moving;
@@ -842,6 +957,11 @@ function start(crt) {
   }
   listen(window, "keydown", keyEvent, true);
   listen(window, "keyup", keyEvent, true);
+  // What the terminal types by itself (the login, the guided commands)
+  // presses the keys too, as if someone sat at it.
+  crt.onAutoKey = function (ch) {
+    if (keys) keys.strike(ch);
+  };
   // With the window out of focus the keyups never come.
   function releaseKeys() {
     if (keys) keys.releaseAll();
@@ -920,6 +1040,7 @@ function start(crt) {
     }
     if (keys.step(dt)) moving = true;
     if (stepLamp(dt)) moving = true;
+    if (stepCeiling(dt)) moving = true;
     // Steam keeps drifting, so the scene keeps drawing while it shows.
     if (props.step(dt, camera)) moving = true;
     if (rig.step(dt, parallaxGoal.x, parallaxGoal.y, lookDown && rig.showsKeys())) moving = true;
@@ -1053,6 +1174,15 @@ function start(crt) {
       // Report a key by what it is rather than handing out the mesh.
       return hit && hit.key ? { key: hit.key.userData.code } : hit;
     },
+    // Puts the room back in the dark and plays the ceiling light again.
+    replayCeiling: function () {
+      if (!model) return;
+      ceilingT = -1;
+      ceilingDone = false;
+      roomLevel = CEILING_DARK;
+      applyLight();
+      wake(1);
+    },
     state: function () {
       return {
         power: powerState,
@@ -1062,6 +1192,8 @@ function start(crt) {
         screenLevel: screenLevel,
         lampOn: lampOn,
         lampLevel: lampLevel,
+        roomLevel: roomLevel,
+        ceilingT: ceilingT,
         rocker: rockerPos,
         // Size of the light maps being drawn with.
         mapSize: model ? model.maps.env.room.image.width : 0,

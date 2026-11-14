@@ -1,7 +1,7 @@
 # Scene build scripts
 
-These generate the 3D scene for the `?gl=1` view (terminal, keyboard, desk and
-room) with Blender 5.2 running headless. Nothing here ships to the site; the
+These generate the site's 3D scene (terminal, keyboard, desk and room) with
+Blender 5.2 running headless. Nothing here ships to the site; the
 outputs land in `src/assets/`.
 
     blender -b --factory-startup --python tools/blender/<script>.py -- [args]
@@ -222,3 +222,20 @@ loaded scene:
   `(x, z, -y)` in the node's local space. As built it is `(0, 1, 0)`, so the
   node turns about its local **-Z**.
 - `LegendStrip` `x0`, `x1` are along the `Keyboard` node's local X (unchanged).
+
+## Link-share preview (`render_share.py`)
+
+    blender -b --factory-startup --python tools/blender/render_share.py -- --out <scratch dir>
+    node tools/share/make.mjs <scratch dir>
+
+Builds the terminal, keyboard and cord as `build_scene.py` places them (no
+room, no bake), puts the end of the boot on the screen in the page's own
+character ROM, and renders one full turn on a transparent background: 60
+frames at 1200 x 630 plus a 2400 x 1260 still of frame 1, about ten minutes
+on the RTX 3070. Frame 1 is the three-quarter front view, so it is also what
+apps that only show a GIF's first frame display. `make.mjs` lays them over
+the dark backdrop and writes `src/share/terminal.gif` (640 x 336, 15 fps, about 1.8 MB,
+`og:image`) and `src/share/terminal.jpg` (the still at 1200 x 630,
+`twitter:image`). Flags: `--frames`, `--size WxH`, `--samples`,
+`--still-only`, `--frame-range A-B` (frames already on disk are skipped
+unless `--force`).

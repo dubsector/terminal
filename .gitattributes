@@ -1,0 +1,5 @@
+# These are copied into, or run on, Linux, where a carriage return at the end
+# of a line breaks them. Keep their line endings whatever the checkout does.
+tools/alpine/rootfs.sh text eol=lf
+tools/alpine/init text eol=lf
+tools/alpine/rootfs/** text eol=lf

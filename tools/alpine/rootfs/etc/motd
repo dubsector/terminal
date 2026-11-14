@@ -1,0 +1,7 @@
+
+This is a real Linux system, running in your browser on an emulated PC.
+It has no network: nothing you do here leaves this tab, and a reload
+forgets all of it.
+
+  poweroff    switch it off and go back
+
