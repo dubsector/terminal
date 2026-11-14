@@ -20,6 +20,11 @@ if (existsSync("dist")) {
 
 cpSync("src/style.css", "dist/style.css");
 cpSync("src/favicon.svg", "dist/favicon.svg");
+// Link-share preview images (tools/share/make.mjs), named in index.html's og: tags.
+cpSync("src/share", "dist/share", { recursive: true });
+cpSync("branding/logo-circle-512.png", "dist/icon-512.png");
+cpSync("src/robots.txt", "dist/robots.txt");
+cpSync("src/sitemap.xml", "dist/sitemap.xml");
 
 // The 3D view's model and baked maps (tools/blender/build_scene.py writes
 // them); fetched by scene.js at run time, not bundled. Each goes out under a
@@ -119,7 +124,30 @@ const preload = [{ href: "./scene.js", as: "script" }].concat(
 );
 const html = readFileSync("src/index.html", "utf8");
 if (!html.includes("/*PRELOAD*/[]")) throw new Error("src/index.html has lost its /*PRELOAD*/[] marker");
-writeFileSync("dist/index.html", html.replace("/*PRELOAD*/[]", JSON.stringify(preload)));
+// The site's links (the file the shell lays out as directories), in words
+// for search engines and screen readers, and as sameAs in the JSON-LD.
+const links = JSON.parse(readFileSync("src/shell/links.json", "utf8"));
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+const linkHtml = Object.entries(links)
+  .map(([group, urls]) => {
+    const items = urls.map((u) => `<li><a href="${esc(u)}">${esc(u.replace(/^https?:\/\//, ""))}</a></li>`);
+    return `<h2>${esc(group)}</h2><ul>${items.join("")}</ul>`;
+  })
+  .join("");
+// The owner's own profiles, not the projects.
+const sameAs = Object.entries(links)
+  .filter(([group]) => group !== "projects")
+  .flatMap(([, urls]) => urls);
+for (const marker of ["<!--LINKS-->", "/*SAMEAS*/[]"]) {
+  if (!html.includes(marker)) throw new Error(`src/index.html has lost its ${marker} marker`);
+}
+writeFileSync(
+  "dist/index.html",
+  html
+    .replace("/*PRELOAD*/[]", JSON.stringify(preload))
+    .replace("<!--LINKS-->", linkHtml)
+    .replace("/*SAMEAS*/[]", JSON.stringify(sameAs))
+);
 
 const options = {
   entryPoints: ["src/terminal.js", "src/scene.js"],
